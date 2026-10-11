@@ -1,0 +1,35 @@
+# Build outputs
+build/
+out/
+*.apk
+*.ap_
+*.aab
+*.dex
+*.class
+
+# Android / Gradle
+.gradle/
+local.properties
+.idea/
+*.iml
+.DS_Store
+
+# Signing keys (never commit)
+*.keystore
+*.jks
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Captures and logs
+*.cu8
+*.log
+
+# Editor
+*.swp
+*~
+.vscode/

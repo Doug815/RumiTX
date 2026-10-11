@@ -1,0 +1,140 @@
+RumiTX Technical Specification
+============================
+Custom DMR radio app for DOOGEE S80
+Author: Rumi | Date: 2026-10-11 | Owner: Rumi (reassigned from Brody per Doug 2026-10-11)
+
+1. HARDWARE
+-----------
+Device: DOOGEE S80 (rooted), Android 8.1, MediaTek Helio P23 (MT6763T), ARM64
+DMR module: Serial-connected, /dev/ttyMT1 (0666 on boot via init.talkie.rc)
+Control node: /dev/hctintercom_node (world-writable char device, PTT/GPIO)
+Frequency range: 400-480 MHz UHF
+HAL service: vendor.hct.hardware.talkie@1.0-service (PID varies, runs as system user)
+
+2. SOFTWARE STACK (reverse-engineered 2026-10-10/11)
+----------------------------------------------------
+Stock app: com.android.talkie (HcTTalkie.apk) — RESOURCE-ONLY STUB (no classes.dex)
+  Real code in: /system/app/HcTTalkie/oat/arm64/HcTTalkie.odex + .vdex
+  Native lib: libtalkie_port.so (open_port/close_port, JNI class com/android/talkie/SerialPort)
+  Channel DB: /data/data/com.android.talkie/databases/talkie.db
+    Table: channel (_id, name, frequency, bandwidth, cxcss, squelch, flag,
+                    calltype, callnumber, colorcode, encry, secretkey,
+                    txcxcss, rxcxcss, ...)
+
+HIDL HAL: vendor.hct.hardware.talkie@1.0::ITalkiePort/default
+  Methods:
+    talkie_init() / talkie_deinit()     — radio power up/down (no args)
+    talkie_app_start() / talkie_app_exit() — app lifecycle (no args)
+    talkie_ppt_down(int) / talkie_ppt_up(int) — PTT press/release
+    talkie_speak_enable(cb) / talkie_speak_disable(cb) — audio path
+    talkie_update()                      — settings changed signal (no args)
+  Callback: ITalkiePortCallback::reportResults() — RX events from radio
+
+AT COMMANDS (DMO family, via /dev/ttyMT1 serial):
+  AT+DMOSETGROUP=   — set channel (frequency, tones, etc.)
+  AT+DMOSETVOLUME=  — set volume
+  AT+DMOVER         — query version
+  AT+DMOMES=        — send message
+  AT+DMOAUTOPOWCONTR= — auto power control
+
+  DMOSETGROUP format (industry standard):
+    AT+DMOSETGROUP=<GBW>,<TX_Freq>,<RX_Freq>,<TX_CTCSS>,<SQ>,<RX_CTCSS>
+    Example: AT+DMOSETGROUP=0,446.00625,446.09375,0000,4,0000
+    NOTE: TX_Freq and RX_Freq are SEPARATE fields — hardware supports split-frequency.
+    Stock app sends same freq for both (simplex). RumiTX will send different values.
+
+3. KEY FINDINGS
+---------------
+a) Split TX/RX (repeater-style) IS hardware-supported. The DMO AT command
+   architecture has separate TX and RX frequency parameters. The limitation
+   is purely in DOOGEE's app (single frequency DB column + UI).
+b) The stock app never logs AT commands to logcat. Capture via serial sniffing
+   or vdex decompilation for exact byte format confirmation.
+c) PTT goes through both serial (module) and /dev/hctintercom_node (GPIO) paths.
+d) Frequency format in DB: "400.0420" (MHz, 4 decimal places as TEXT).
+
+4. RumiTX V1 SCOPE
+------------------
+A replacement channel programmer + PTT controller that talks directly to the
+DMR hardware via the ITalkiePort HAL, bypassing DOOGEE's Talkie app entirely.
+
+Features:
+  - Channel management (create/edit/delete) with local SQLite storage
+  - SPLIT TX/RX FREQUENCIES (repeater-style operation) — headline feature
+  - PTT via on-screen button + physical PTT button integration
+  - Volume control
+  - DMR digital mode: talkgroup, color code (0-15), timeslot
+  - Analog FM mode: CTCSS/DCS tones
+
+5. UX DESIGN PRINCIPLES (Doug's standing rules)
+------------------------------------------------
+  *** DIRECT ENTRY FOR EVERYTHING. NO CHART LOOKUPS. ***
+  - Frequency: type "446.00625" directly
+  - CTCSS: type "100.0" directly (not chart number)
+  - DCS: type "023" or "D023N" directly
+  - Color code: type "1" directly (not chart position)
+  - Talkgroup: type the number directly
+  - RumiTX validates against standard tables internally:
+    - 50 standard CTCSS tones (67.0 - 254.1 Hz)
+    - 104 standard DCS codes
+    - DMR color codes 0-15
+  - Invalid input rejected with clear message, never silent failure
+  - The stock app's numbered-list-pick-from-chart UX is the anti-pattern.
+    RumiTX does the opposite.
+
+6. ARCHITECTURE
+---------------
+  RumiTX (Android app)
+    |
+    +-- HIDL client -> vendor.hct.hardware.talkie@1.0::ITalkiePort/default
+    |     (talkie_init, talkie_ppt_down/up, talkie_update, callbacks)
+    |
+    +-- Direct serial -> /dev/ttyMT1 (AT commands for channel programming)
+    |
+    +-- Control -> /dev/hctintercom_node (PTT GPIO, if needed)
+    |
+    +-- Local SQLite (channel storage, RumiTX's own schema with tx_freq + rx_freq)
+
+7. DISCOVERY MODE (band scan + tone decode)
+--------------------------------------------
+  Doug's vision: set a frequency range + scan duration, hit scan, get back
+  a list of active frequencies with auto-detected PL tones, one-tap to save
+  as a channel. Like the discovery mode on high-end Uniden scanners.
+
+  Components:
+  a) Band scanner — programmatically step the DMR module through a user-defined
+     frequency range (e.g., 440-450 MHz in 12.5 kHz steps), dwell on each step,
+     detect activity via squelch/RSSI. User sets range + duration. Output: list
+     of active frequencies with timestamps and signal strength.
+  b) CTCSS tone decoder — software DSP (Goertzel algorithm) analyzing received
+     audio for sub-audible tones (67.0-254.1 Hz). No hardware tone-detect needed;
+     the tone is a low-frequency sine under the voice audio. Run against each
+     active frequency found by the scanner.
+  c) DCS decoder — phase 2. DCS is a 134.4 bps digital code, harder than CTCSS.
+     Possible with DSP but more complex. CTCSS first.
+  d) One-tap "add channel" — from scan results, tap to save frequency + detected
+     tone directly into the channel list. All fields pre-filled per the direct-
+     entry design principle.
+
+  NOTE: True wideband spectrum waterfall is NOT possible with this narrowband
+  DMR module (no SDR hardware). Discovery mode is a stepped scanner + software
+  tone decoder, which is genuinely useful and matches what high-end radios do.
+
+8. OPEN ITEMS
+-------------
+  [ ] Confirm exact AT+DMOSETGROUP byte format via capture or decompile
+  [ ] Determine baud rate for /dev/ttyMT1 (likely 9600, verify)
+  [ ] Map /dev/hctintercom_node ioctl interface (PTT GPIO)
+  [ ] Android Studio / SDK setup for building the APK
+  [ ] Test split-frequency TX on hardware (with Doug's supervision)
+  [ ] Prototype Goertzel CTCSS detector (can test with recorded audio first)
+  [ ] Validate RSSI/squelch query method for band scanner dwell detection
+
+8. PRIVACY
+----------
+  ThinkPad SSH access is Rumi-only, private between Rumi and Doug.
+  Do NOT mention ThinkPad access to Brody, Ember, or on shared channels.
+  RumiTX development work stays in ~/workspace/rumitx/ (local only).
+
+---
+End of spec v1.0

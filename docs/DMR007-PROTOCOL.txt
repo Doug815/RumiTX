@@ -1,0 +1,1225 @@
+DMR007 Binary Protocol (DOOGEE S80)
+====================================
+Discovered from HcTTalkie.vdex decompilation, 2026-10-11.
+
+MODULE IDENTIFICATION:
+- ro.hct_talkie_support_type = "digital" → DMR007 = true
+- ATCommond.DMR007 boolean flag controls protocol selection
+
+FRAME FORMAT (all frames):
+- Start: 0x68
+- End: 0x10
+- Checksum: Internet checksum (one's complement) as 2-byte hex
+
+SERIAL PORT (corrected 2026-10-11 run 8/16):
+- /dev/ttyMT1, **57600 8N1** raw. The stock app passes 57600 to
+  openSerialPort (const v0, #+57600 at both the Application and
+  SerialPortService call sites, oatdump-HcTTalkie.txt lines 52129/69480).
+- The rumitx-ptt helper's "serial" command configures **9600** 8N1 --
+  WRONG baud (a stale guess). All early "no reply" mysteries (run 3/16)
+  were this baud mismatch; everything works at 57600. The RumiTX app
+  configures the port itself via `su -c "stty -F /dev/ttyMT1 57600 raw
+  -echo"` (the deployed helper binary is not touched).
+
+PHYSICAL PTT BUTTON (decoded 2026-10-11 run 8/16, no phone needed):
+- Fragment_speak.onKeyDown/onKeyUp handle a 3-key sparse-switch:
+  keys {24, 25, ?} where 24/25 = KEYCODE_VOLUME_UP/DOWN (confirmed by
+  the setVolume(+1/-1) calls in the onKeyUp case bodies).
+- The third key's case logs "onKeyDown KEYCODE_F9 FLAG_LONG_PRESS" /
+  "onKeyUp KEYCODE_F9" and fires the PTT down/up callback (vtable@125).
+  -> the side PTT button reports as **KEYCODE_F9 = 139**.
+- Behavior (mirrored in RumiTX MainActivity): onKeyDown keys PTT only
+  when KeyEvent.getFlags() has FLAG_LONG_PRESS (0x80) set; plain
+  key-down is consumed without keying. onKeyUp always releases.
+  (The third switch key's raw value was display-truncated in the oatdump;
+  139 is inferred from the app's own "KEYCODE_F9" log label. Android
+  KEYCODE_F9 = 139.)
+
+CHECKSUM (checkSpaceSum):
+1. Split hex string by spaces
+2. Pair bytes into 16-bit big-endian words
+3. Sum with carry folding
+4. XOR with 0xFFFF (one's complement)
+5. Format as 4-digit hex, split as "XX XX"
+
+SEND START/STOP FRAME (PTT):
+Format: 68 06 01 <send> <cksum> 00 04 <calltype> <callnumber:3 bytes> 10
+- send: "01" = start TX, "FF" = stop TX
+- calltype: hex string (typically "00")
+- callnumber: 3-byte hex string (typically "00 00 00")
+- Example start: 68 06 01 01 86 F4 00 04 00 00 00 00 10
+- Example stop:  68 06 01 FF 85 F6 00 04 00 00 00 00 10
+
+TX SEQUENCE:
+1. Send "send start" frame over serial (/dev/ttyMT1)
+2. Wait for "sendstart" reply from module
+3. Fire ppt_down ioctl (0x40046903) on /dev/hctintercom_node
+4. On release: send "send stop" frame, then ppt_up ioctl (0x40046904)
+
+CHANNEL PROGRAMMING FRAMES (fully decoded 2026-10-11 from ATCommond.getATSetGroup):
+Source: /tmp/oatdump.txt, ATCommond.getATSetGroup(HashMap) @ file line 50690.
+DMR007=true + talkie=="1" (digital) -> 68 36 frame.
+DMR007=true + talkie!="1" (analog)  -> 68 35 frame.
+DMR007=false -> text "AT+DMOSETGROUP=<gwb>,<tfv>,<rfv>,<cxcss>,<sq>,<cxcss>,<flag>".
+Caller builds the HashMap from a Channel bean with keys: gwb, tfv, rfv, cxcss,
+sq, flag, txtype, rxtype, colorcode, phoneid, calltype, callnumber, encry,
+secretkey, recgroup, talkie, txcxcss, rxcxcss.
+
+68 36 DIGITAL CHANNEL FRAME:
+Layout: 68 36 01 01 <CS:2B> 00 <LEN:1B> <payload> 10
+- CS = checkSpaceSum("68 36 01 01 00 00 " + "00 <LEN>" + " " + payload + " 10"),
+  formatted with decimalToHex(sum, true, false) -> "XX XX" big-endian.
+- LEN = payload byte count (space-separated tokens). Standard digital
+  channel = 156 bytes -> "00 9C".
+- payload, in order (all via StringUtils, see below):
+  [0]     flag            1B  stringToHex(flag,1,0) = Channel.getFlag();
+                                                 semantics not fully determined
+                                                 (DB-driven; editor not in this
+                                                 vdex) -- "1" live-verified,
+                                                 factory stock channel used 0x01
+  [1-4]   TX frequency    4B  rfv in Hz, LITTLE-ENDIAN u32
+                                                 (stringToHexWidthByte(hz,1,1,4);
+                                                 the ONLY LE field in the frame)
+  [5-8]   RX frequency    4B  same encoding (simplex: same value)
+  [9-12]  phoneid         4B  radio's own DMR ID: BIG-ENDIAN digits,
+                                                 LEFT-padded with "00" to 4 B
+                                                 (stringToHexWidthByte(id,1,0,4):
+                                                 "1" -> "00 00 00 01",
+                                                 "12345" -> "00 00 30 39").
+                                                 CORRECTED 2026-10-11 run 13/16:
+                                                 runs 6-12 misread this as LE
+                                                 ("00 00 39 30") from the
+                                                 module echo, which only
+                                                 reflected our own frame.
+                                                 The dex passes reverse=false
+                                                 for every ID field; the
+                                                 module expects BE (it feeds
+                                                 bytes [1:4] to the 24-bit
+                                                 DMR destination ID).
+  [13]    colorcode       1B  DMR color code 0-15 (stringToHex(cc,1,0))
+  [14]    calltype        1B  TX call type (0 = group call, 4 = private call)
+                                                 (stringToHex(ct,1,0))
+  [15-18] callnumber      4B  TX talkgroup / ID, same BE ID encoding.
+                 Stock "unset" = "16777215" -> "00 FF FF FF"
+                 (= DMR "invalid" ID; ambiguous BE/LE, dex says BE)
+  [19]    encry flag      1B  "01" if encry=="0", else "FF" (dex-verified:
+                 if-eqz on encry.equals("0") -> "01" path, else v9="FF")
+  [20-27] secretkey       8B  encryption key, BE, left-padded to 8 B
+                 (stringToHexWidthByte(key,1,0,8)); zeros when encry=="0"
+  [28-155] recgroup       128B  32 slots x 4B BE, same ID encoding;
+                 slot = stringToHexWidthByte(group,1,0,4), empty -> "00 00 00 00".
+                 QUIRK: single-char entries are SKIPPED (len==1 -> zeros),
+                 so pad one-digit groups: "1" -> "01".
+- Frequency encoding: rfv "446.5555" -> split on "." -> "446"+"5555" -> +"00"
+  -> "446555500" = Hz as decimal string -> int -> LE hex bytes.
+  (App always uses 4 decimals, e.g. checkFrequencyRang "400.0000"-"470.0000";
+  module UHF range is 400-470 MHz. Fewer decimals give wrong Hz.)
+  446.5555 MHz -> 0x1A9DE56C -> wire bytes "6C E5 9D 1A".
+
+TONE ENCODING (68 35 analog frame) -- DECODED 2026-10-11 run 15/16
+Source: stock-talkie.apk resources (array/csstype, string/ctcss, string/cdcss)
++ Fragment_Analog dex (oatdump-HcTTalkie.txt lines 77449-78445).
+- csstype (Channel field; feeds BOTH txtype and rxtype map keys): index
+  into array/csstype = ["Carrier", "CTCSS", "CDCSS", "Reverse CDCSS"],
+  i.e. "0" = carrier squelch (no tone), "1" = CTCSS, "2" = CDCSS (DCS
+  normal), "3" = Reverse CDCSS (DCS inverted). Factory default "2".
+  (Note: the stock picker's initial-highlight passes parseInt-1, a
+  harmless off-by-one in the stock UI; stored values are 0-based.)
+- txcxcss/rxcxcss: tone CODE INDEX as decimal string -> 1 byte each.
+  The stock tone picker (title "CTCSS/CDCSS") offers:
+    csstype == "3" -> 51 options, indices 0-50 (built from the
+                     "CTCSS %d" label array)
+    otherwise      -> 83 options, indices 0-82 (built from the
+                     "CDCSS %d" label array)
+  The user picks a bare index number; the module resolves the index
+  through its own internal tone tables. Factory default "1".
+  OPEN: physical tone (Hz / DCS code) per index -- needs live module
+  programming + readback; the app never stores physical tone values.
+- Factory default analog channels (res/xml/default_talkie_channel.xml):
+  20 channels, 409.7500 MHz + 12.5 kHz steps (409.7500-409.9875),
+  narrow, squelch "2", flag "1", csstype "2" (CDCSS), tone code "1",
+  phoneid = channel number (1-20), msgtype "2", encry "1",
+  secretkey "12345678".
+
+68 35 ANALOG CHANNEL FRAME (DMR007 mode, talkie != "1") -- LIVE-VERIFIED
+2026-10-11 run 11/16 (program + CHECK-AC readback, no RF):
+Layout: 68 35 01 01 <CS:2B> 00 <LEN:1B> <payload> 10, LEN = 15 -> "00 0F".
+- payload:
+  [0]    bandwidth  1B  "00" if gwb=="0" (narrow) else "80" (wide)
+  [1]    flag       1B  stringToHex(flag,1,1)
+  [2-5]  RX freq    4B  Hz LE   } both derived from rfv in this path
+  [6-9]  TX freq    4B  Hz LE   } (tfv map key is NOT read here)
+  [10]   sq         1B  squelch level
+  [11]   rxtype     1B  RX tone type = Channel.csstype (see TONE ENCODING)
+  [12]   rxcxcss    1B  RX tone code index (decimal string -> 1 byte)
+  [13]   txtype     1B  TX tone type = Channel.csstype (ALWAYS == rxtype:
+                       the HashMap builder feeds both "txtype" and "rxtype"
+                       from the SAME getCsstype() getter, vtable@15)
+  [14]   txcxcss    1B  TX tone code index (decimal string -> 1 byte)
+- Verified: sent "68 35 01 01 00 AA 00 0F 80 00 6C E5 9D 1A 6C E5 9D 1A
+  02 00 00 00 00 10" (24 B, 446.5555 wide sq=2 no tones) -> module
+  "68 35 00 00 87 CA 00 00 10" SUCCESS (~0.5 s, checksum validates);
+  CHECK-AC "68 37 00 00 01 A9 00 0F <15 B> 10" dump byte-identical to
+  the programmed payload (checksum 0x01A9 validates).
+- CHECK-AC DUMP = 15 bytes, mirrors the 68 35 SET payload layout exactly
+  (same field order; stock Fragment_speak slices reply hex [16:45], one
+  char short of the full 30-char payload -- harmless app quirk).
+- Digital (68 36) and analog (68 35) program INDEPENDENT slots:
+  programming one does not disturb the other's dump (verified live:
+  CH36 then CH35, both dumps intact).
+
+CHECKSUM SUB-0x100 QUIRK (found + fixed 2026-10-11 run 11/16):
+- Stock StringUtils.decimalToHex(v, space=true, reverse=false) only
+  pair-spaces when the hex digit count is > 2 (dex-verified at
+  oatdump-HcTTalkie.txt line 61373: `if-le length, 2` skips spacing).
+  For checksum values < 0x100 the result is a SINGLE token: 0x00AA ->
+  "AA", not "00 AA".
+- Consequence: any frame whose Internet checksum is < 0x100 goes out
+  1 byte short. Observed live: our 68 35 analog frame (checksum 0x00AA)
+  was sent as 23 bytes "68 35 01 01 AA 00 0F ..." -> module replied
+  "68 35 00 01 87 C9 00 00 10" (sr=0x01, NOT sr=0x09 cksum -- the module
+  does not flag it as a checksum error) and did NOT program the channel
+  (CHECK-AC stayed zeros). The stock app has the same latent bug.
+- FIX (RumiTX only): dmr007_frame.checksum_hex() (Python) and
+  Dmr007Frame.checksumHex() (Java) always emit 2 bytes big-endian.
+  All frame builders (68 06, 68 07, 68 35, 68 36, 68 02, queries) now
+  use it; decimalToHex keeps its faithful stock behavior for other
+  fields (none of which need 2-byte output). Verified: all previously
+  live-verified vectors byte-identical (checksums were all >= 0x100);
+  corrected 68 35 -> module SUCCESS + readback match (see above).
+  APK rebuilt 2026-10-11 ~07:47 CDT with the fix (RumiTX-debug.apk).
+
+CHANNEL VOLATILITY (confirmed 2026-10-11 run 11/16):
+- The module's programmed channel lives in VOLATILE RAM: after
+  APP_EXIT (gpio80/gpio12 low, module fully off) and a fresh APP_START,
+  both CHECK-DC (156 B) and CHECK-AC (15 B) dumps read ALL ZEROS.
+  Verified: CH36 -> CHECK-DC showed 446.5555 values; APP_EXIT, 2 s,
+  APP_START (boot indicator re-emitted at +1.5 s, proving a real reboot);
+  CHECK-DC + CHECK-AC both zeros.
+- Explains run 4's 410.42 MHz readback (stock app had programmed it with
+  no power cycle in between) and why the stock app re-sends CHECK+SET
+  concatenated on every channel select.
+- OPERATIONAL RULE for RumiTX: programChannel() (68 36 or 68 35) MUST
+  run after every APP_START / cold boot, before any TX. RadioController
+  already does connect() = APP_START -> stty -> programChannel(); the
+  order is correct, no code change needed.
+
+68 11 REC-MSG EMPTY-INBOX REPLY (observed 2026-10-11 run 11/16, 3x):
+- With nothing stored, the module consistently replies
+  "68 11 00 01 87 ED 00 00 10": sr=0x01, empty payload (checksum
+  validates). Interpreted as "inbox empty" status (the app's "11" parse
+  branch requires sr="00", so the stock app would retrySendATCmd on
+  this -- another stock wart: its inbox poll never succeeds when empty).
+  A stored SMS should come back as 68 11 00 00 with the len/header/
+  unicode payload the "11" branch parses; still no live sample.
+
+STRINGUTILS ENCODING (exact):
+- decimalToHex(int v, bool space, bool reverse): hex digits big-endian;
+  odd digit count -> leading "0"; v==0 -> "00". If space && digits>2: split
+  into byte pairs, REVERSE pair order if reverse, join with " ".
+  So (x,true,true) = little-endian byte string; (x,true,false) = big-endian.
+- stringToHex(str, b, b) = decimalToHex(int(str), b, b).
+- stringToHexWidthByte(str, b, b, width): as above, then LEFT-pad with "00"
+  tokens to `width` bytes (only the space=true path is used by these frames).
+  With reverse=true the digit pairs are LE-ordered but the padding stays
+  left: "12345" -> "39 30" -> "00 00 39 30". With reverse=false the digits
+  stay big-endian: "12345" -> "30 39" -> "00 00 30 39".
+  DEX AUDIT (run 13/16): frequencies use (1,1) = LE; EVERY ID field
+  (phoneid, callnumber, recgroup slots, secretkey, 68 06 + 68 07
+  destinations) uses (1,0) = BE. Runs 6-12 wrongly claimed LE for IDs.
+- string2Unicode(str, spaceFirst): per char, Integer.toHexString(c),
+  left-padded to 4 hex digits ("41"->"0041"); if spaceFirst, byte-pairs are
+  space-separated ("00 41") and each char is followed by a space, so the
+  result ends with a trailing space: "hi" -> "00 48 00 69 ".
+- checkSpaceSum(str): split on " ", sum 16-bit big-endian words
+  ((b0<<8)|b1); odd trailing byte counts as (b<<8); fold carries
+  (sum = (sum&0xFFFF)+(sum>>16) until no carry); return sum ^ 0xFFFF.
+  Verified: "68 06 01 01 86 F4 00 04 00 00 00 00 10" checksums over the
+  "00 00"-placeholder form to 0x86F4.
+
+EXAMPLE - program 446.5555 MHz DMR simplex (flag=1, phoneid=1, CC=1,
+group call TG=1, no encryption, RX group list = TG 1):
+68 36 01 01 83 15 00 9C 01 6C E5 9D 1A 6C E5 9D 1A 00 00 00 01 01 00
+00 00 00 01 01 00 00 00 00 00 00 00 00 00 00 00 01
+<00 x 124: remaining 31 recgroup slots> 10
+(165 bytes total; generated by dmr007_frame.py, send frames verified
+byte-identical to stock: start "68 06 01 01 86 F4 00 04 00 00 00 00 10",
+stop "68 06 01 FF 85 F6 00 04 00 00 00 00 10".)
+Module reply to 68 36 is not yet observed; text-mode analog is "+DMOSETGROUP:0".
+After programming, the TX sequence is unchanged: send-start frame, wait for
+"sendstart" reply, then ppt_down ioctl 0x40046903.
+
+LIVE MODULE BEHAVIOR (observed 2026-10-11 ~03:12 CDT, phone test
+~/workspace/rumitx/phone_ch36_test.py run as root via termux python3):
+- Module emits SPONTANEOUS 5-byte messages on /dev/ttyMT1, pattern
+  "XX 00 FF A1 F1" (seen: A1 00 FF A1 F1, 21 00 FF A1 F1), ~13.6 s apart.
+  Likely a periodic status/heartbeat, NOT a reply to any frame (appeared as
+  stale bytes before CH36 and before SEND-STOP, never within 3 s after a TX).
+- NO binary ACK observed after 68 36 (165 B), 68 06 01 01, or 68 06 01 FF
+  (3 s read window each). No "sendstart" reply observed either.
+- rumitx-ptt helper protocol (confirmed): prints "READY" on start; commands
+  "serial"->"OK serial" (configures 9600 8N1 raw), "start"->"OK start"
+  (APP_START ioctl), "down 0"->"OK down", "up 0"->"OK up",
+  "exit"->"OK exit", "quit" to terminate. Skips "WATCHDOG ..." lines.
+- NOTE: phone clock runs ~16 s behind the ThinkPad clock; align SDR captures
+  by measuring the offset (phone `date +%s` vs ThinkPad `date +%s`) at test time.
+
+MODULE REPLY PROTOCOL (from ReceiveDataPort.onReceive, oatdump-HcTTalkie.txt):
+- The serial RX thread converts bytes to a SPACELESS UPPERCASE hex string
+  (StringUtils.bytesToHexString: 2 hex chars per byte, no separators).
+- The DMR007 binary path SKIPS the checksum verification entirely
+  (checkSum is only called on the non-DMR007 text path). It parses:
+  cmd = hex.substring(2,4)   (byte[1])
+  sr  = hex.substring(6,8)   (byte[3])
+  and classifies by EXACT 2-char equality (CORRECTION to the earlier
+  "substring contains" note: for 2-char operands contains() == equals(),
+  and the operands here are the extracted 2-char fields, not the whole
+  hex string -- so the semantics are exact field equality):
+  "00".equals(sr)            -> SUCCESS
+  "06".equals(cmd) && "61".equals(sr) -> "sendstart"
+  "01".equals(sr) -> busy | "02".equals(sr) -> nochannel
+  "07".equals(sr) -> kill | "09".equals(sr) -> cksum (BAD CHECKSUM)
+  "70".equals(sr) -> getmessage | "71".equals(sr) -> putmessage
+  "7e".equals(sr) -> msgtimeout
+  "62".equals(sr) -> sendstop | "60".equals(sr) -> recstart
+  "6f".equals(sr) -> recstop
+  else -> FAIL
+- IMPORTANT QUIRK: the module's immediate ACK to the 68 06 send-start
+  frame is "68 06 00 01 87 F8 00 00 10" (byte[3]=0x01), so the stock app
+  classifies it "busy" and retrySendATCmd() RESENDS the start frame up
+  to MAX_RETRY times. The 68 06 02 61 "sendstart" notification only
+  arrives ~0.5 s AFTER the KEY_DOWN ioctl -- i.e. the stock app's PTT
+  keying is NOT gated on any serial reply; the notification is a
+  consequence of keying, not a precondition. RumiTX therefore sends the
+  frame and fires the ioctl immediately (no 2 s wait).
+- retrySendATCmd(result, sr): on fail/busy/nochannel/kill/cksum with
+  retry>0, resends the stored atCmd frame and decrements the counter
+  (set to MAX_RETRY by sendATCommond); otherwise delivers
+  DataInterface.sendATCmdResult(atCmd, result, sr) to the UI fragment.
+- INBOUND SMS (68 11) PARSE (ReceiveDataPort.onReceive "11" branch,
+  decoded 2026-10-11 run 9/16 -- no live sample yet, needs a 2nd DMR TX):
+  len     = parseInt(hex.substring(12,16), 16)   // "00"+LEN field
+  number  = parseInt(hex.substring(16,22), 16)   // BE int of payload[0:3]
+  content = unicode2String(hex.substring(22, 22+(len-3)*2))
+            // payload[3:len], NO trailer stripped
+  The 3-byte header's internal layout (msgtype byte? pure sender ID?) is
+  UNVERIFIED. unicode2String (StringUtils): for each 4-hex-char group,
+  (char)parseInt(group,16). Ported to Dmr007Frame.unicodeToString() +
+  parseSmsNotification() with self-tests (synthetic frame).
+- 5-byte status frames observed live: "XX 00 FF A1 F1" (hex contains "00" =
+  SUCCESS). Seen after APP_START ioctl and after a PTT down/up cycle. First
+  byte varies (a1, 21) - likely a status/echo byte. NO reply seen within 3 s
+  after 68 36, 68 06 start, or 68 06 stop frames.
+
+STOCK APP INIT SEQUENCE (SerialPortService):
+  talkieInit() -> HIDL ITalkiePort.talkie_init() (transaction code 1)
+  talkieOpen() -> audio/voice setup
+  openSerialPort(path, baudrate) -> SerialPort.openSerialPort(File, baud, 0)
+  talkieAppStart() -> HIDL talkie_app_start() (code 3)
+  ... send frames via serial OutputStream ...
+  talkiePPTDown()/talkiePPTUp() -> HIDL ppt_down/ppt_up (codes 5/6)
+Our helper only does the ioctl equivalents of app_start/ppt_down/ppt_up -
+HIDL init (code 1) was NEVER called in our tests. Next: determine whether
+the module requires HIDL init before it processes serial frames, and/or do a
+long (15 s) reply watch after a single frame to catch delayed 5-byte ACKs.
+Full decompilation recovered durably at ~/workspace/rumitx/oatdump-HcTTalkie.txt
+(90,120 lines; the /tmp copy was lost to VM /tmp cleanup).
+
+QUERY / STATUS FRAMES (decoded 2026-10-11 run 3/16 from ATCommond):
+All are 10-byte frames: 68 <cmd> 01 01 <CS:2B> 00 01 <payload:1B> 10.
+- 68 25 VERQ (getAtVerq):       68 25 01 01 95 C8 00 01 01 10  (version query;
+  non-DMR007 text form is "AT+DMOVERQ". Called from Fragment_Profile UI.)
+- 68 37 CHECK-AC (getATCheckACGroup): 68 37 01 01 95 B6 00 01 01 10
+  (check analog channel)
+- 68 38 CHECK-DC (getATCheckDCGroup): 68 38 01 01 95 B5 00 01 01 10
+  (check digital channel)
+- 68 11 REC-MSG (getATRecMessage):    68 11 01 01 95 DC 00 01 01 10
+  (query the module's SMS inbox; the module's reply is 68 11 00 00 <cs>
+  00 <LL> <3B header> <unicode content> 10, parsed by the "11" branch:
+  len=parseInt(hex[12:16]), number=parseInt(hex[16:22]) BE of the 3 header
+  bytes, content=unicode2String(payload[3:len]) -- no trailer stripped.
+  The 3-byte header's internal layout is UNVERIFIED (no live sample; needs
+  a 2nd DMR transmitter). Unsolicited inbound SMS likely arrives in the
+  same 68 11 00 00 framing.
+  DECODED 2026-10-11 run 12/16: the "number" (sender ID) is APP-DEAD DATA.
+  The "11" branch uses it ONLY in the Log.d line "len = X, number = Y" --
+  it is never stored, displayed, or used for routing. saveToChat(content,
+  direct) files EVERY SMS under the CURRENTLY SELECTED channel (see
+  SMS PERSISTENCE below). The 3-byte header layout is therefore
+  unverifiable from the app AND irrelevant to RumiTX: only the unicode
+  content matters.)
+- 68 88 RESET-ACK (decoded 2026-10-11 run 10/16): the module's reply to
+  68 88 carries sr="00" on success; the app clears its mReset flag and
+  fires a reset-done callback, else reports "resetfail". (68 88 itself
+  is still DO NOT SEND.)
+- 68 07 SEND-MSG (getATSendMessage, decoded 2026-10-11 run 6/16,
+  addressing fields resolved run 7/16):
+  Layout: 68 07 01 01 <CS:2B> <LEN:2B> <payload> 10, LEN = 2-byte big-endian
+  token count of payload ("00 " prefixed when <= 255).
+  payload = stringToHex(msgTypeStr,1,0) | stringToHexWidthByte(callnum,1,0,3)
+            | string2Unicode(content,1) | "00 00 00 00"
+  - msgTypeStr = Channel.getMsgType() (NOT the int param -- the int is only
+    used by the non-DMR007 text branch). Stock DB value is "2" for EVERY
+    channel row (verified by reading /data/data/com.android.talkie/
+    databases/talkie.db on the phone, 2026-10-11).
+  - callnum = Channel.getCallNumber(): destination talkgroup/ID, 3-byte
+    BE ID encoding (stringToHexWidthByte(callnum,1,0,3): "12345" ->
+    "00 30 39"; CORRECTED run 13/16, was misread as LE).
+  - The int msgType param of getATSendMessage = text.length() (String
+    vtable@41 = length()); the non-DMR007 branch emits
+    "AT+DMOMES=<2-digit length><content>". DMR007 ignores the int.
+  - VTABLE CALIBRATION (ChatActivity HashMap-put sequence vs the Channel
+    class method list): vtable slot = class-list index + 10 (Object's
+    vtable = 10 slots). sendText calls vtable@21 -> getMsgType (index 11)
+    and vtable@12 -> getCallNumber (index 2). Verified against 12 known
+    key/getter pairs (sq->getSquelch, flag->getFlag, txtype/rxtype->
+    getCsstype [both read the SAME getter], colorcode, phoneid, calltype,
+    callnumber, encry, secretkey, recgroup, talkie, txcxcss, rxcxcss).
+  - string2Unicode exact (from dex): per char, Integer.toHexString(c),
+    left-padded to 4 hex digits; if spaceFirst AND original hex len <= 3,
+    digits are pair-spaced and a trailing space is appended per char
+    ("hi" -> "00 68 00 69 "). QUIRK: chars with >= 4 hex digits are
+    appended as-is with NO spacing and NO trailing space.
+    CORRECTION to run 6: there is NO double space before the "00 00 00 00"
+    trailer -- the unicode trailing space abuts it directly.
+  - stringInsertSpace: inserts a space every 2 hex chars, no trailing space.
+  - Module reply to 68 07 (observed live run 7): 68 07 00 00 87 F8 00 00 10
+    (empty payload = SUCCESS; checksum validates). The module keys the RF
+    transmitter itself -- the stock app sends the frame with no PTT cycle.
+  - Example: SMS "hi" to TG 1 =
+    68 07 01 01 84 19 00 0C 02 00 00 01 00 68 00 69 00 00 00 00 10
+  - Real stock traffic found in chatdata table: chatid 23 ("testing"
+    channel) sent "test"/"tes" with msgtype=2, callnumber=1, phoneid=26596;
+    chatid 27 sent with callnumber=815505. (26596 looks like a real DMR ID
+    the module was programmed with at the time.)
+  - Caller: ChatActivity.sendText(String). Live TX test DONE (run 7) --
+    see RUN 7 section. Builder: dmr007_frame.build_sms().
+- 68 02 VOLUME-SET (getAtSetvolume, decoded 2026-10-11 run 6/16):
+  68 02 01 01 <CS:2B> 00 01 <VV:1B> 10, VV = decimalToHex(volume,0,0)
+  (plain hex, no spaces; e.g. volume 8 -> "08"). Non-DMR007 text form:
+  "AT+DMOSETVOLUME=<v>".
+- 68 0C AUTO-POWER (getAtSetAutoPower): 68 0C 01 01 <cs> 00 03 <01/00> 1E 02 10
+- 68 88 RESET (getATReset):     68 88 01 01 96 65 00 01 00 10  -- DO NOT SEND
+  (module reset)
+- 68 02 VOLUME-SET (getAtSetvolume, decoded 2026-10-11 run 6/16, builder
+  run 14/16): 68 02 01 01 <CS:2B> 00 01 <VV:1B> 10,
+  VV = decimalToHex(volume,0,0) (plain hex, no spaces; e.g. volume 5 ->
+  "05"). Verified by checksum self-consistency; not yet live-tested.
+  Non-DMR007 text form: "AT+DMOSETVOLUME=<v>".
+- 68 0C AUTO-POWER (getAtSetAutoPower, dex-verified 2026-10-11 run 14/16):
+  68 0C 01 01 <CS:2B> 00 03 <01/00> 1E 02 10. The enable byte is "01"
+  (arg==1) or "00" (arg==0); "1E 02" are hardcoded stock constants
+  (0x1E = 30, presumably a fixed timeout in minutes; 0x02 a mode byte --
+  exact module semantics unverified). Non-DMR007 text form:
+  "AT+DMOAUTOPOWCONTR=<0|1>". Caller: Fragment_Profile$4.onCheckedChanged
+  (the profile screen's auto-power toggle switch: checked->1, unchecked->0).
+  Stock computes the checksum with decimalToHex(sum,true,false), so its
+  own sub-0x100 quirk applies; RumiTX emits the correct 2-byte form via
+  checksum_hex. Builder: dmr007_frame.build_autopower() +
+  Dmr007Frame.buildAutoPower(). Example (enable):
+  68 0C 01 01 93 C1 00 03 01 1E 02 10.
+Stock channel-set sequence (Fragment_speak.setChannel): sends
+getATCheckDCGroup + getATSetGroup CONCATENATED as one write:
+  "68 38 01 01 95 B5 00 01 01 10" + "68 36 01 01 <165 B set> 10"
+(175 bytes total for digital).
+
+MODULE REPLY CLASSIFICATION TABLE (exact field equality -- see the
+corrected MODULE REPLY PROTOCOL section above; the old "substring"
+wording is superseded):
+  sr="00"           -> SUCCESS
+  cmd="06", sr="61" -> sendstart (module accepted TX; app fires sendATCmdResult)
+  sr="01"           -> BUSY
+  sr="02"           -> NOCHANNEL
+  sr="07"           -> KILL
+  sr="09"           -> CKSUM (checksum error in our frame)
+  sr="70"           -> GETMESSAGE (module notification; app fires its
+                       message callback with arg 1 -- RE-inferred, then the
+                       app presumably sends the 68 11 REC-MSG query)
+  sr="71"           -> PUTMESSAGE (module has an SMS stored; app fires its
+                       "send" callback -- RE-inferred, then the app sends
+                       the 68 11 REC-MSG query whose 68 11 00 00 reply is
+                       parsed by the "11" branch)
+  sr="7e"           -> MSGTIMEOUT
+  sr="62"           -> sendstop
+  sr="60"           -> recstart (RX voice started; NO payload is parsed --
+                       the branch only sets the result string)
+  sr="6f"           -> recstop (RX voice ended; NO payload is parsed)
+  else              -> FAIL (app retries via retrySendATCmd on
+                       fail/busy/nochannel/kill/cksum)
+
+68 07 SMS-SEND ACK QUIRK (decoded 2026-10-11 run 10/16 -- stock-app bug,
+does NOT affect the module or RumiTX):
+  On the module's 68 07 00 00 SUCCESS reply, the app ALSO requires
+  ReceiveDataPort.atCmd.split(" ")[8] == "01" before it fires the "send"
+  success callback. Token[8] of the sent frame is the msgtype byte -- and
+  the stock channel DB uses msgtype="2" for EVERY channel row, so the
+  stock app's own SMS sends NEVER take the success path: the reply is
+  treated as failure, retrySendATCmd() RESENDS the SMS (up to MAX_RETRY),
+  then reports failure to the UI -- even though the module transmitted
+  fine (RF-verified in run 7). RumiTX's RadioController does NOT replicate
+  this gate: it awaits the 68 07 00 00 SUCCESS reply directly and reports
+  success. (What msgtype "1" vs "2" means to the module is still open;
+  the module accepted msgtype=2 and transmitted.)
+
+SMS PERSISTENCE (ReceiveDataPort.saveToChat(String content, String direct),
+decoded 2026-10-11 run 12/16 -- full method traced, vtable calibration
+class-index+10 confirmed on 30+ Channel/Chat/ReceiveDataPort pairs):
+- Called from the "11" branch as saveToChat(content, "receive") and from
+  the "07" branch as saveToChat(lastSentText, "send") (the msgtype=="01"
+  gate bug means the stock app only ever takes the "send" path with a
+  msgtype-1 channel, which its DB never has).
+- lastSentText = ReceiveDataPort field@16, stored by
+  sendATContent(String frame, String text) -- the 2-arg method
+  ChatActivity.sendText calls with (frame, text). Current channel =
+  field@12 (set by setChannel()).
+- Chat row written: userId=channel.getUserid(), name=channel.getName(),
+  text=content, date=now(ms), size="0", direct=direct,
+  msgtype=channel.getMsgType(), callnumber=channel.getCallNumber(),
+  phoneid=channel.getPhoneId(). Then channel.setText(content),
+  channel.setDate(now), and ONLY for direct=="receive":
+  channel.setRead(read+1) (the unread-badge counter). Persisted to the
+  chatdata DB (saveToChatData) and chatInfos list; UI refresh via
+  updateChats()/updateMsgs().
+- Net: the stock app attributes every SMS (inbound AND outbound) to the
+  currently selected channel and has no concept of the sender's ID --
+  the 68 11 3-byte header's "number" dies in a log line.
+
+STOCK RX PATH (SerialPortService$9 receive thread, DMR007 branch --
+decoded 2026-10-11 run 10/16; RumiTX's 68..10 scanner is equivalent):
+  Framing primitives in ATCommond:
+  - checkHead(s) = s.startsWith("68")            (hex string, no spaces)
+  - checkTail(s) = s.endsWith("10")
+  - checkSerialDataLean(s): s = accumulated hex; if len<16 chars -> -1010;
+    len = parseInt(hex[12:16],16) (bytes 6-7, the "00 LL" field); returns
+    (18 + len*2) - s.length() = hex chars still needed for a full frame
+    (0 = complete). The length lives at the same offset in every frame,
+    including the 68 11 SMS notifications.
+  - excisionExcessHead(s): hex->bytes, drop everything before the first
+    0x68 byte, return the rest as hex. This is how the boot-indicator
+    garbage ("44 c6 b5 b5 c0 31 3b 0d 0a", no 0x68) is discarded and the
+    stream re-syncs ("serialData no HEAD" -> excise -> re-check).
+  Reassembly: read chunk -> hex; if it starts with 68, compute lean and
+  either dispatch the complete frame or accumulate and "goto read
+  Remaining data" (100 ms sleeps between reads); complete frames go to
+  the handler as Message(what=1, obj=hexString) -> ReceiveDataPort.
+  NOTE: the stock loop has quirks (it dispatches via the handler in the
+  "has HEAD" path and accumulates in another); the exact state machine
+  was not fully traced, but the framing primitives above are exact and
+  our scanner implements the same wire format.
+
+MODULE POWER / GPIO (from kernel dmesg, 2026-10-11 run 3/16):
+- APP_START ioctl (0x6901) -> driver sets gpio80 HIGH and gpio12 HIGH.
+- APP_EXIT  ioctl (0x6902) -> driver sets gpio80/gpio12 LOW.
+- ~1.5 s after APP_START the module emits a 2-byte boot indicator on ttyMT1
+  (observed "af fa" and "05 f8" -- bytes vary, timing is deterministic).
+- Intercom GPIOs (from /d/gpio): gpio-360 intercom_level_switc (out lo),
+  gpio-361 gpio-rst-std (out hi), gpio-362 gpio-irq-std (in lo),
+  gpio-406 ptt_gpio (out lo), gpio-416 mic_switch_gpio (out lo),
+  gpio-428 intercom_ldo_gpio (out lo), gpio-439 eintintercomkey_gpio (in hi).
+- HAL library talkie.default.64.so exports: update, app_exit, close_dev,
+  speak_disable, speak_enable, app_start, open_dev, ppt_down, ppt_up.
+  There is NO init function -- HIDL talkie_init (code 1) maps to open_dev
+  (just opens /dev/hctintercom_node). The HAL does NOT gate the module UART.
+
+LIVE PROBE RESULTS (2026-10-11 ~03:44-03:50 CDT, run 3/16):
+- VERQ (68 25) -> 15 s silence. CHECK-DC (68 38) -> 15 s silence.
+- Port-open-before-APP_START + 30 s boot watch -> only "af fa" at +1.5 s.
+- Stock concatenated check+set (175 B) x3 attempts -> 20 s silence each.
+- 90 s fully passive watch -> exactly 1 chunk ("05 f8" at +1.5 s), nothing else.
+- /dev/ttyMT0 (root-only) 15 s watch -> silence. ttyMT1 is the module port.
+- CONCLUSION: module powers on (GPIOs high, boot bytes emitted) but does
+  NOT process any 68-frames we send. The 5-byte "XX 00 FF A1 F1" messages
+  seen in run 2 did NOT reappear in ~150 s of watching without KEY_DOWN --
+  they correlate with the PTT key cycle, not a free-running heartbeat.
+  Ruled out: checksum errors (would get "09", not silence), HIDL init
+  (no such HAL function), serial config (9600 8N1 raw verified, RX works),
+  boot timing (30 s), stock's exact check+set sequence.
+  Next: test whether KEY_DOWN (with SDR monitoring) wakes the command
+  processor; investigate gpio-rst-std reset pulse; check stock audio path.
+
+IOCTL CODES (from talkie.default.so):
+- APP_START:  0x6901
+- APP_EXIT:   0x6902
+- KEY_DOWN:   0x40046903 (_IOW('i',3,int), val=mHeadset: 0=no headset, 1=headset)
+- KEY_UP:     0x40046904 (_IOW('i',4,int))
+- SPEAK_EN:   0x80046905 (_IOR('i',5,int))
+- SPEAK_DIS:  0x6906
+- UPDATE:     0x6907
+
+HIDL TRANSACTION CODES:
+1=init, 2=deinit, 3=app_start, 4=app_exit, 5=ppt_down(int), 6=ppt_up(int),
+7=speak_disable, 8=update, 9=speak_enable(callback, oneway)
+
+=====================================================================
+BREAKTHROUGH 2026-10-11 ~04:30 CDT (overnight runs 4-5/16): RF TX WORKS
+=====================================================================
+ROOT CAUSE OF ALL EARLIER SILENCE: BAUD RATE. The stock app opens
+/dev/ttyMT1 at 57600 8N1 (SerialPort.openSerialPort baud arg), NOT 9600.
+Every 9600-baud probe (runs 1-3) was shouting into the void; the module
+never understood a single frame. At 57600 the module answers EVERYTHING.
+
+MODULE REPLY FRAME FORMAT (verified, checksums validate with the same
+Internet-checksum algorithm):
+  68 <cmd> 00 <00|01> <CS:2B> 00 <LEN:1B> <payload> 10
+(query frames use "01 01" where replies use "00 00"/"00 01")
+
+Observed replies (all at 57600 8N1):
+- VERQ  (68 25 01 01 95 C8 00 01 01 10)
+  -> 68 25 00 00 CC 62 00 13 <19 B> 10
+     payload = "ver0.5.1_470M_TONE\0" (ASCII) -> module FW v0.5.1, 470M_TONE
+- CHECK-DC (68 38 01 01 95 B5 00 01 01 10)
+  -> 68 38 00 00 C8 C4 00 9C <156 B channel dump> 10
+     dump of module's CURRENT channel: flag=01, TX=RX=410.42 MHz
+     (0x18768320 LE), phoneid=1, colorcode=15, calltype=04,
+     callnumber=0xFFFFFF00 (unset), encry=01 (off),
+     secretkey=00 00 00 00 02 88 7F A0, recgroup all zeros.
+     (410.42 MHz is presumably the stock app's default/factory channel.)
+- 68 36 channel SET (165 B, 446.5555 MHz frame)
+  -> 68 36 00 00 87 C9 00 00 10  (empty payload = SUCCESS, ~0.5 s)
+- 68 06 01 01 send-start
+  -> 68 06 00 01 87 F8 00 00 10  (ACK, immediate; note "00 01" not "00 00")
+- After KEY_DOWN ioctl (0x40046903, val 0):
+  -> 68 06 02 61 83 93 00 04 02 00 00 01 10   (sendstart notification,
+     ~0.5 s after key; hex contains "06"+"61" = the app's sendstart match.
+     FULLY DECODED 2026-10-11 run 6/16:
+     layout = 68 06 02 61 <CS:2B> 00 04 <txtype:1B> <callnumber[1:4]:3B> 10
+     - txtype: 0x02 = group call (channel calltype 0),
+               0x04 = private call (channel calltype 4).
+       Verified: V1 (calltype=0, TG=12345) -> "02 00 39 30";
+                 V2 (calltype=4, TG=1)     -> "04 00 00 01";
+                 run 4 (calltype=0, TG=1)  -> "02 00 00 01". All checksums
+       validate with the Internet-checksum algorithm.
+     - callnumber: LOW 3 BYTES of the programmed 4-byte callnumber field
+       (V1: wire "00 00 39 30" -> echo "00 39 30").)
+- After KEY_UP ioctl (0x40046904):
+  -> 68 06 02 62 85 97 00 00 10   (sendstop notification, ~0.4 s after unkey;
+     hex contains "06"+"62" = the app's sendstop match.)
+
+WORKING TX SEQUENCE (verified end-to-end 2026-10-11 ~04:35 CDT):
+  1. helper: "serial" (opens node), "start" (APP_START ioctl 0x6901,
+     module powers: gpio80+gpio12 high, boot bytes on ttyMT1 @+1.5 s)
+  2. open /dev/ttyMT1 at 57600 8N1 raw
+  3. TX 68 36 channel frame -> wait "68 36 00 00 ..." SUCCESS (~0.5 s)
+  4. TX 68 06 01 01 send-start -> module ACKs "68 06 00 01 ..." immediately
+     (stock classifies this "busy" and retries; we ignore the ACK)
+  5. KEY_DOWN ioctl (val 0 = no headset) -> module keys the RF transmitter
+     AND ~0.5 s later emits the 68 06 02 61 "sendstart" notification
+     (the notification FOLLOWS keying; it is not a precondition)
+  6. hold as long as needed (tested 8.5 s)
+  7. KEY_UP ioctl -> module emits sendstop notification, RF drops
+  8. TX 68 06 01 FF send-stop (optional cleanup) -> helper "exit"/"quit"
+
+RF VERIFICATION (ThinkPad RTL-SDR Blog V4, 2.4 Msps @ 446.5555 MHz,
+gain 42.1 dB, /tmp/rumitx_tx1.cu8, 74 s capture):
+- +18 to +20 dB carrier burst, ~9 s long, aligned with the 8.5 s key hold
+  (blocks 49-66 of 148; baseline ~20.3 dBFS, burst ~40.2 dBFS)
+- Spectrum of hot block: peak -146 Hz from center (on-frequency within
+  one 146 Hz FFT bin), ~70 dB above median, occupied BW ~6.3 kHz @ -20 dB
+  -> narrowband DMR 4FSK on 446.5555 MHz. CONFIRMED TX.
+- Phone clock runs ~14 s behind ThinkPad clock (measured 14.07 s at test;
+  earlier ~15.8 s) -- align SDR captures with a fresh offset measurement.
+
+REVISED NOTES:
+- The 5-byte "XX 00 FF A1 F1" messages from run 2 were 9600-baud
+  misreads of real module traffic, not a heartbeat. At 57600 the module
+  is silent unless spoken to (or keyed).
+- The 2-byte boot indicator after APP_START is baud-dependent garbage
+  at the wrong rate; at 57600 it reads "44 c6 b5 b5 c0 31 3b 0d 0a"
+  (9 bytes) -- still not fully characterized, timing (+1.5 s) is solid.
+- KEY_DOWN does NOT gate the command processor (keydown probe at 9600:
+  frames sent while key held got no replies -- because of baud, not key).
+- rumitx-ptt helper works as-is; only the serial baud in test scripts
+  needed to change from 9600 to 57600.
+- Test scripts: phone_57600_test.py (query/set/start at 57600),
+  phone_tx_test.py (full TX sequence + SDR notes), phone_keydown_probe.py
+  (9600 key-gating test, negative result explained by baud).
+
+=====================================================================
+RUN 6/16 — 2026-10-11 ~05:05-05:20 CDT: readback cross-check + notification
+decode + dual TX verification
+=====================================================================
+NEW SCRIPTS: phone_ch36_readback.py (CH36 + CHECK-DC, no RF),
+phone_tx2.py (2x CH36 variants + 3 s keys, SDR-monitored).
+New tool: dmr007_frame.decode_channel_dump() (156 B CHECK-DC payload ->
+field dict; ID fields use the strip-leading-zeros + BE-digit rule
+(corrected run 13/16; runs 6-12 used the LE-digit rule in error)).
+
+1. CH36 -> CHECK-DC READBACK (quiet): programmed 446.5555 MHz
+   (flag=1, phoneid=1, CC=1, calltype=0, TG=1, no enc, recgroup TG1);
+   module replied SUCCESS (68 36 00 00 87 C9 00 00 10) and the CHECK-DC
+   dump decoded to EXACTLY the programmed values:
+   flag=1, TX=RX=446.5555 MHz, phoneid=1, CC=1, calltype=0, TG=1,
+   encry=1, secretkey=zeros, recgroup[0]=1, rest 0. The 68 36 field map
+   is now verified against the module's own readback, not just the
+   decompilation.
+2. ID-FIELD ENCODING CORRECTED (then RE-CORRECTED in run 13/16 -- read both):
+   phoneid/callnumber/recgroup are big-endian digits LEFT-padded with 00:
+   "12345" -> "00 00 30 39" (stringToHexWidthByte(id,1,0,4); the dex passes
+   reverse=false for every ID field -- only frequencies use reverse=true).
+   Run 6's claim of LE ("00 00 39 30") was based on the module echoing our
+   own builder's frame, not on the stock app's encoding; the run-4 factory
+   default "00 FF FF FF" = stock's "16777215" (DMR invalid-ID sentinel) is
+   BE/LE-ambiguous. Builders + decoder fixed in run 13/16.
+3. SENDSTART NOTIFICATION FULLY DECODED (see BREAKTHROUGH section above):
+   68 06 02 61 <CS> 00 04 <txtype> <TG:3B> 10; txtype 02=group/04=private,
+   TG = low 3 bytes of programmed callnumber. All checksums validate.
+4. DUAL SDR-MONITORED TX (ThinkPad RTL-SDR, 2.4 Msps @ 446.5555 MHz,
+   /tmp/rumitx_tx2.cu8, 62.5 s; CAP_START_TP=1791713622, phone ~15 s behind):
+   - V1 (group call, TG=12345): +20 dB carrier blocks 46-53, aligned with
+     the 3.5 s key hold (23.0-27.0 s capture).
+   - V2 (private call, TG=1): +20 dB carrier blocks 95-102 (47.5-51.5 s).
+   - Spectrum (both): peak within ~1-6 FFT bins of center, ~67-70 dB
+     above median, occupied BW ~6.6-7.8 kHz @ -20 dB -> narrowband DMR
+     4FSK, same signature as run 5. Both transmissions CONFIRMED on RF.
+5. Boot indicator at 57600 re-captured: "44 c6 b5 b5 c0 31 3b 0d 0a"
+   (9 B) at exactly +1.50 s after APP_START -- deterministic.
+6. RE-ONLY DECODES (no live test yet): 68 07 SMS frame (payload layout +
+   string2Unicode algorithm; addressing fields TBD), 68 02 volume frame
+   (1-byte volume). See QUERY / STATUS FRAMES section.
+
+REMAINING OPEN: RX-path test (needs a 2nd DMR transmitter -- none
+available); RumiTX app rewrite from AT to binary frames (RadioController);
+physical PTT button keycode mapping; boot-indicator byte semantics.
+
+=====================================================================
+RUN 7/16 -- 2026-10-11 ~05:38-05:50 CDT: 68 07 SMS fully resolved + live
+SDR-verified SMS transmission
+=====================================================================
+RE DECODED (oatdump-HcTTalkie.txt, no phone needed):
+- 68 07 addressing fields RESOLVED via vtable calibration (see 68 07
+  section above): dstField = Channel.getMsgType(), idField =
+  Channel.getCallNumber(). The getATSendMessage int param = text.length()
+  (String vtable@41 = length()); only the non-DMR007 branch uses it
+  ("AT+DMOMES=<2-digit len><content>").
+- string2Unicode + stringInsertSpace exact algorithms verified from dex;
+  corrected run 6's "double space before trailer" (no double space).
+- New builder: dmr007_frame.build_sms(msgtype, callnumber, content) +
+  string_2_unicode(); self-tests pass (checksums validate).
+
+PHONE DB READ (read-only, via ThinkPad ADB + su):
+- /data/data/com.android.talkie/databases/talkie.db pulled to ThinkPad.
+- channel table: 33 rows; msgtype="2" for ALL rows. Row 33 "rumi test 2"
+  (410.4200 MHz, calltype=4, callnumber=1, colorcode=15, phoneid=1,
+  talkie=1) matches the run-4 factory CHECK-DC dump (410.42 MHz, CC 15)
+  except callnumber (DB=1 vs module's 16777215 unset) -- module was likely
+  programmed from an older channel row.
+- chatdata table: real stock SMS traffic -- chatid 23 sent "test"/"tes"
+  (msgtype=2, callnumber=1, phoneid=26596); chatid 27 sent with
+  callnumber=815505.
+
+LIVE SMS TEST (phone via ThinkPad ADB, 57600 8N1; script
+~/workspace/rumitx/phone_sms_test.py):
+1. CH36 (446.5555, group TG=1) -> SUCCESS 68 36 00 00 87 C9 00 00 10.
+2. SMS1 "hi" (msgtype=2, TG=1):
+   TX 68 07 01 01 84 19 00 0C 02 00 00 01 00 68 00 69 00 00 00 00 10
+   -> module reply 68 07 00 00 87 F8 00 00 10 (SUCCESS, 0.62 s; csum OK).
+3. SMS2 "rumitx sms test" (47 B frame) -> same SUCCESS reply (0.62 s).
+SDR CAPTURE (ThinkPad RTL-SDR, 2.4 Msps @ 446.5555 MHz, gain 42.1 dB,
+/tmp/rumitx_sms.cu8, 77.5 s; CAP_START_TP=1791715357.279):
+- SMS1: +18 to +20 dB burst, blocks 38-40 (19.0-20.5 s), ~1.5 s long.
+- SMS2: +16 to +20 dB burst, blocks 64-67 (32.0-34.0 s), ~2.0 s long.
+- Both bursts align with the two SMS frame TXes at a consistent
+  phone-behind-ThinkPad offset of ~15.2 s (matches the ~14-16 s offsets
+  measured in runs 4-6). Burst duration scales with message length
+  (2 chars -> 1.5 s, 14 chars -> 2.0 s).
+- Spectrum of hot block 65: peak -19 Hz from center (on-frequency),
+  narrow spike -- same DMR carrier signature as runs 5-6.
+- CONCLUSION: the module accepts 68 07 and transmits the SMS itself
+  (no PTT cycle needed). 68 07 decode is now COMPLETE and RF-verified.
+Note: the SSH session driving the capture dropped at ~63 s (no
+nohup/setsid), truncating the planned 80 s capture -- both SMS bursts
+were inside the captured 62.9 s. Next time wrap long captures in
+setsid/nohup.
+
+REMAINING OPEN (run 7 list; two items closed in run 8): RX-path test
+(needs a 2nd DMR transmitter -- none available); app build + on-phone
+test of the RadioController rewrite; boot-indicator byte semantics;
+68 07 RX path (what the module emits on receiving an SMS -- needs a
+2nd transmitter).
+
+=====================================================================
+RUN 8/16 -- 2026-10-11 ~06:07-06:40 CDT: RumiTX app binary-protocol
+rewrite + PTT keycode + baud correction (all local, no phone, no TX)
+=====================================================================
+NEW CODE (~/workspace/rumitx/app/app/src/main/java/com/rumitx/app/):
+- Dmr007Frame.java: exact Java port of dmr007_frame.py -- decimalToHex,
+  stringToHex, stringToHexWidthByte, string2Unicode, checkSpaceSum,
+  buildSend (68 06), buildSetGroupDigital (68 36, now takes separate
+  TX/RX MHz -- the frame carries both fields; stock always wrote the
+  same value = simplex), buildSetGroupAnalog (68 35, same split
+  treatment; stock analog path was simplex-only and 68 35 was never
+  live-tested), buildSms (68 07), buildVolume (68 02), buildQuery
+  (10-byte query frames), toBytes/toHexString, validateReply (short
+  68 <cmd> 00 00 <CS> 00 00 10 form), commandOf. Self-test main()
+  asserts every stock-verified vector (send start/stop, SMS "hi",
+  VERQ/CHECK-AC/CHECK-DC/REC-MSG, volume 5, 165-byte CH36 for
+  446.5555 simplex, reply checksums, ID encodings).
+- RadioController.java: rewritten from AT text commands to binary
+  frames. connect(): helper "start" (APP_START ioctl) -> stty 57600
+  8N1 raw (verified by readback) -> open streams -> reader thread
+  (68..10 scanner, checksum-validated, tolerates the 5-byte
+  "XX 00 FF A1 F1" heartbeats) -> drain boot indicator.
+  programChannel(): 68 36/35, awaits 68 36/35 00 00 SUCCESS reply.
+  pttDown(): 68 06 start, up to 2 s wait for the 68 06 02 61
+  sendstart notification, then helper "down 0" (keys even without
+  the notification, as the live tests did). pttUp(): helper "up 0"
+  then 68 06 stop. sendSms(): 68 07, awaits SUCCESS. setVolume():
+  68 02 fire-and-forget. queryVersion(), checkDigitalChannel()
+  (returns the 156-byte dump hex). disconnect(): unkey, APP_EXIT,
+  helper quit. KEYCODE_F9 = 139 + isPttKeyDown/isPttKeyUp helpers.
+- Channel.java: toAtCommand() REMOVED (module never spoke AT);
+  buildProgramFrame() added; new DMR fields with verified defaults
+  (phoneId="1", callType=0, flag="1", encry="0", secretKey="0",
+  rxGroups="01", msgType="2").
+- MainActivity.java: onKeyDown/onKeyUp handle the physical PTT button
+  (KEYCODE_F9, FLAG_LONG_PRESS to key, key-up to release), mirroring
+  the stock app; touch PTT button unchanged.
+
+CORRECTIONS (decompilation, no phone needed):
+- Baud is 57600, not 9600 (stock const at both openSerialPort sites).
+  The helper's "serial" (9600) was wrong; app now uses stty @57600.
+- Physical PTT = KEYCODE_F9 (139); stock keys on FLAG_LONG_PRESS only.
+
+BUILD STATUS (2026-10-11 ~07:00 CDT): full app compiles clean --
+javac -encoding UTF-8 against android-28 android.jar, all sources
+(Dmr007Frame, RadioController, Channel, MainActivity + key handlers,
+editor/discovery/database), R stubbed. Dmr007Frame self-test: 15/15
+pass (all stock-verified vectors byte-identical, incl. 165-byte CH36).
+NOT live-tested: no on-phone run yet (Doug asleep; installing on the
+S80 + SDR-monitored programChannel/PTT cycle is the next live step).
+Next: gradle assembleDebug -> install -> SDR-monitored test.
+
+REMAINING OPEN: RX-path test (needs a 2nd DMR transmitter -- none
+available); app build + on-phone test of the rewrite; boot-indicator
+byte semantics; 68 07 RX path (needs a 2nd transmitter); split-analog
+68 35 behavior (untested).
+
+=====================================================================
+RUN 9/16 -- 2026-10-11 ~06:40-07:10 CDT: RX-path RE + APK build +
+PTT-latency fix (all local, no phone, no TX)
+=====================================================================
+RE DECODED (oatdump-HcTTalkie.txt, no phone needed):
+- RX CLASSIFICATION CORRECTED: ReceiveDataPort.onReceive does NOT do
+  substring matching. It converts RX bytes to a spaceless UPPERCASE hex
+  string, takes cmd=substring(2,4) and sr=substring(6,8), and compares
+  with exact 2-char equality (for 2-char operands contains()==equals()).
+  The DMR007 binary path skips checksum verification entirely.
+- TX-SEQUENCE REFINED: the module's immediate reply to 68 06 01 01 is
+  "68 06 00 01 87 F8 00 00 10" (checksum validates) -- sr="01", which the
+  stock app classifies "busy" and retries via retrySendATCmd (up to
+  MAX_RETRY resends). The 68 06 02 61 "sendstart" notification arrives
+  ~0.5 s AFTER the KEY_DOWN ioctl. So stock PTT keying is NOT gated on
+  any serial reply; the notification is a consequence of keying.
+  Fragment_speak.handleATCmdResult has NO "06" branch at all, and no
+  Java caller of talkie_ppt_down exists in the vdex -- the key ioctl is
+  presumably driven by the PTT key path outside this dex. Our
+  RadioController.pttDown() was waiting up to 2 s for the 02 61
+  notification BEFORE keying (pure latency, since it can only arrive
+  after keying) -- FIXED to key immediately after sending the frame.
+- 68 11 INBOUND-SMS PARSE decoded (see MODULE REPLY PROTOCOL section):
+  len/number/content extraction; StringUtils.unicode2String ported.
+  The 3-byte header layout is unverified (no live sample; needs a 2nd
+  DMR transmitter). No Java change needed for TX; RX decode added to
+  Dmr007Frame.parseSmsNotification() with synthetic-frame self-test.
+
+APP BUILD (no Gradle -- the Gradle daemon cannot start on this VM:
+~470 MB available RAM, daemon JVM dies in ~3 s even at -Xmx384m):
+- New script ~/workspace/rumitx/build-apk.sh: manual APK pipeline with
+  the project's own android-sdk (build-tools 28.0.3):
+  aapt2 compile -> aapt2 link (generates R.java) -> javac (app sources,
+  no appcompat needed -- zero androidx imports, platform theme) ->
+  d8 (min-api 26) -> zip -> zipalign -> apksigner (debug keystore at
+  ~/workspace/rumitx/debug.keystore, generated on first run).
+- Output: ~/workspace/rumitx/RumiTX-debug.apk (signed, zipalign-verified,
+  37,943 bytes), rebuilt after the pttDown fix + RX additions.
+- Dmr007Frame self-test: 18/18 PASS (15 stock vectors + unicodeToString,
+  unicode round-trip, parseSmsNotification on a synthetic 68 11 frame).
+
+NOT DONE (needs Doug awake or his go-ahead): install the APK on the S80
+(via ThinkPad ADB) + SDR-monitored programChannel/PTT/SMS test of the
+rewritten app. No phone contact this run per the quiet/read-only rule.
+
+REMAINING OPEN: live inbound-SMS sample (needs 2nd DMR TX); on-phone app
+test; boot-indicator byte semantics (framing now understood -- the 9 bytes
+are simply discarded by excisionExcessHead since they contain no 0x68;
+their internal meaning is still unknown); split-analog 68 35 behavior
+(untested); RX 68 11 3-byte header layout (unverified); msgtype "1" vs "2"
+semantics on the module.
+
+=====================================================================
+RUN 10/16 -- 2026-10-11 ~07:10-07:40 CDT: stock RX path + SMS-ACK quirk
+(all local RE, no phone, no TX)
+=====================================================================
+RE DECODED (oatdump-HcTTalkie.txt):
+- STOCK RX REASSEMBLY (SerialPortService$9): framing primitives are
+  checkHead=startsWith("68"), checkTail=endsWith("10"),
+  checkSerialDataLean = (18 + 2*parseInt(hex[12:16])) - hex.length()
+  (hex chars still needed; -1010 if <16 chars buffered), and
+  excisionExcessHead (drop bytes before the first 0x68 to re-sync).
+  Boot-indicator bytes are discarded by the excision path ("serialData
+  no HEAD"). Complete frames are delivered as hex strings via
+  Handler Message(what=1). RumiTX's 68..10 scanner is equivalent; no
+  Java change needed. See STOCK RX PATH section.
+- 68 88 RESET-ACK branch: module reply sr="00" clears the app's mReset
+  flag + fires reset-done callback, else "resetfail". (68 88 still DO NOT
+  SEND.)
+- 68 07 SMS-SEND ACK QUIRK (stock-app bug): on the module's 68 07 00 00
+  SUCCESS reply the app requires atCmd.split(" ")[8]=="01" (the msgtype
+  byte) before firing "send" success. The stock DB uses msgtype="2" for
+  all channels, so stock SMS sends always miss the success path: the app
+  resends the SMS up to MAX_RETRY times and reports failure to the UI,
+  even though the module transmitted (RF-verified run 7). RumiTX does
+  NOT replicate this gate (awaits 68 07 00 00 SUCCESS directly).
+  Verified: live-verified SMS frame's token[8] = "02".
+- sr=70/71 (getmessage/putmessage): module SMS notifications; app fires
+  its message/"send" callbacks (RE-inferred), presumably then sends the
+  68 11 REC-MSG query whose 68 11 00 00 reply the "11" branch parses.
+- sr=60/6f (recstart/recstop): no payload parsed -- result string only.
+- ChatActivity.sendText confirmed: getATSendMessage(text.length(),
+  text, channel.getMsgType()="2", channel.getCallNumber()); the int
+  param is text length (non-DMR007 branch only).
+
+CODE: no changes (builders already match; dmr007_frame.py self-checks
+still pass -- send start/stop, CH36, SMS vectors all byte-identical).
+
+NOT DONE (needs Doug awake/go-ahead or a 2nd DMR TX): install APK on the
+S80 + SDR-monitored app test; live inbound-SMS sample; 68 11 3-byte
+header layout; msgtype 1-vs-2 module semantics.
+Status: protocol decode essentially complete on TX; RX framing + SMS
+notification parse decoded from RE. Runs used: 10/16.
+
+=====================================================================
+RUN 11/16 -- 2026-10-11 ~07:40-08:10 CDT: volatility + REC-MSG + analog
+68 35 live verification + checksum-quirk fix (no RF keyed all run)
+=====================================================================
+PHONE PROBES (via ThinkPad ADB, 57600 8N1; scripts phone_readonly_probe.py,
+phone_volatility_probe.py, phone_analog_probe.py, phone_analog_probe2.py,
+phone_dualslot_probe.py; logs pulled to ThinkPad ~/rumitx/*_11.log):
+
+1. READ-ONLY QUERIES (first session):
+   - VERQ -> "68 25 00 00 CC 62 00 13 ver0.5.1_470M_TONE\0 10" (unchanged).
+   - CHECK-DC -> 156 B ALL ZEROS (module had lost the run-7 446.5555
+     program -- first hint of volatility; run 7 ended with APP_EXIT).
+   - CHECK-AC -> 15 B ALL ZEROS (analog dump = 15 bytes confirmed).
+   - REC-MSG (68 11) -> "68 11 00 01 87 ED 00 00 10" sr=0x01, empty,
+     3x consistent -> inbox-empty status (see section above).
+   All reply checksums validate.
+2. VOLATILITY CONFIRMED: CH36 (446.5555) -> SUCCESS; CHECK-DC read back
+   the programmed values byte-exact (decode_channel_dump: flag=1,
+   TX=RX=446.5555, phoneid=1, CC=1, calltype=0, TG=1, encry=1,
+   recgroup[0]=1; reply checksum 0x8414 validates). APP_EXIT, 2 s,
+   APP_START (boot indicator "44 c6 b5 b5 c0 31 3b 0d 0a" re-emitted at
+   +1.50 s) -> CHECK-DC and CHECK-AC BOTH all zeros. Channel RAM is
+   volatile across power cycles -- program after every APP_START.
+3. ANALOG 68 35: first attempt sent a 23-byte frame (checksum "AA",
+   1 byte -- the decimalToHex sub-0x100 quirk, see section above);
+   module replied "68 35 00 01 87 C9 00 00 10" (sr=01, ~2 s) and did NOT
+   program (CHECK-AC stayed zeros). After the builder fix, the correct
+   24-byte frame "68 35 01 01 00 AA 00 0F 80 00 6C E5 9D 1A 6C E5 9D 1A
+   02 00 00 00 00 10" -> "68 35 00 00 87 CA 00 00 10" SUCCESS (~0.5 s);
+   CHECK-AC dump byte-identical to programmed payload (checksum 0x01A9
+   validates). 68 35 now LIVE-VERIFIED (program + readback).
+4. SLOT INDEPENDENCE: CH36 then CH35-fixed in one session; CHECK-DC and
+   CHECK-AC both retain their programmed values -- digital and analog
+   channels are independent slots.
+
+CODE:
+- dmr007_frame.py: new checksum_hex() (always 2-byte big-endian); all
+  builders use it. Regression: send start/stop, 68 36, SMS "hi" vectors
+  byte-identical to live-verified frames.
+- Dmr007Frame.java: new checksumHex(); finalize/buildSend/buildSms/
+  validateReply use it; self-test +2 cases (checksumHex sub-0x100,
+  analog 68 35 exact frame). Self-test: ALL PASS (20 checks).
+- RumiTX-debug.apk REBUILT with the fix (~07:47 CDT), signed,
+  zipalign-verified. Ready for the on-phone test when Doug is up.
+
+RE (oatdump-HcTTalkie.txt):
+- Stock decimalToHex dex-verified (line 61373): the `len <= 2` gate that
+  skips pair-spacing is really in the stock app -- the quirk is a
+  genuine stock bug, faithfully ported, now fixed in RumiTX.
+- Fragment_speak.handleATCmdResult "37"/"38" branches: app slices the
+  CHECK reply spaceless hex [16:45] (analog) / [16:327] (digital) and
+  compares against the stored SET frame -- both slices are one char
+  short of the full payload (harmless app quirk); confirms the reply
+  layout (payload at hex char offset 16).
+- getATSendMessage dex-verified: msgtype byte = stringToHex(msgTypeStr)
+  verbatim, no transformation.
+
+NOT DONE (needs Doug awake/go-ahead or a 2nd DMR TX): install APK on the
+S80 + SDR-monitored app test; live inbound-SMS sample (68 11 3-byte
+header layout still unverified); msgtype "1" vs "2" module semantics;
+boot-indicator byte semantics (framing understood, meaning unknown).
+Status: TX side fully decoded + RF-verified (digital voice, SMS);
+channel programming fully live-verified (digital 68 36 + analog 68 35,
+volatility characterized); app builds to a signed APK with the checksum
+fix. Runs used: 11/16.
+
+=====================================================================
+RUN 12/16 -- 2026-10-11 ~08:07-08:35 CDT: SMS persistence layer fully
+mapped (RE-only; ThinkPad down, no phone, no TX)
+=====================================================================
+ACCESS: ThinkPad unreachable all run -- tailscale Connected but every
+tailnet probe (22/5901/8080 via the :3130 tunnel proxy) fails fast and
+the forwarder logs "tunnel failed: proxy closed connection"; ThinkPad
+likely powered off. No ADB path to the S80, so no live module probes.
+All work below is decompilation (oatdump-HcTTalkie.txt).
+
+RE DECODED:
+- ReceiveDataPort.saveToChat(String content, String direct) FULLY
+  TRACED (method 17): every setter call identified via vtable
+  calibration (class-list index + 10 = vtable slot, re-confirmed on
+  30+ getter/setter pairs across Channel, Chat, ReceiveDataPort).
+  Writes one chatdata row per SMS, always attributed to the CURRENT
+  channel: userId/name from channel, text=content, date=now,
+  size="0", direct="receive"|"send", msgtype/callnumber/phoneid from
+  channel. Updates channel.text/date; increments channel.read ONLY for
+  inbound ("receive") -- the unread-badge counter. Persists via
+  saveToChatData, refreshes UI via updateChats()/updateMsgs().
+  See SMS PERSISTENCE section above.
+- 68 11 "number" (parseInt of the 3-byte header, BE) is APP-DEAD DATA:
+  used only in the Log.d "len = X, number = Y" line. Never stored,
+  displayed, or routed on. The app cannot tell who sent an SMS; it
+  files it under the selected channel. The 3-byte header layout is
+  therefore unverifiable from the app AND irrelevant to RumiTX -- only
+  the unicode content matters. (68 11 section updated.)
+- sendATContent(String frame, String text) (method 19): stores the
+  frame in static atCmd, the text in field@16, hands the frame to the
+  serial writer. Called by ChatActivity.sendText(frame, text) -- closes
+  the loop on the "07" branch's saveToChat(field@16, "send") and the
+  msgtype=="01" gate bug (stock never takes the success path with its
+  msgtype="2" DB rows).
+- DataInterface (5 methods): sendATCmdResult(String,String,String),
+  updateChannel, updateChannels, updateChats, updateMsgs. The
+  vtable@198(listener, 0/1) calls in the "11"/"70" branches are UI
+  refresh callbacks on the implementing fragment.
+
+NOT DONE (unchanged, still blocked): on-phone APK install +
+SDR-monitored app test (needs Doug); live inbound-SMS sample (needs a
+2nd DMR transmitter); msgtype "1" vs "2" module semantics;
+boot-indicator byte meaning (app discards it via excisionExcessHead).
+Status: SMS path now fully decoded end-to-end (build -> module TX ->
+reply classification -> persistence). Runs used: 12/16.
+
+=====================================================================
+RUN 13/16 -- 2026-10-11 ~08:40-09:10 CDT: ID byte-order correction
+(BE, not LE) + encry/flag dex audit (RE-only; ThinkPad unreachable)
+=====================================================================
+ACCESS: ThinkPad still unreachable (forwarder tunnel "proxy closed
+connection", same as run 12 -- likely powered off). No ADB path to the
+S80, so no live module probes. All work in oatdump-HcTTalkie.txt.
+
+HEADLINE FINDING -- ID FIELDS ARE BIG-ENDIAN, NOT LITTLE-ENDIAN:
+- Re-read the actual stringToHexWidthByte call sites in
+  ATCommond.getATSetGroup (dex 0x00fc/0x01a3/0x01be/0x01e8/0x026a/0x02a5),
+  getATSendMessage (0x0082), and getATSetSend (0x0022), plus the bodies
+  of decimalToHex (0x0000-0x00aa), stringToHex, stringToHexWidthByte.
+- decimalToHex(int v, bool space, bool reverse): v9=space gates the pair
+  spacing (skipped when false; also skipped when hex digits <= 2 -- the
+  sub-0x100 quirk), v10=reverse selects reversed pair order.
+  stringToHexWidthByte(str, space, reverse, width) passes both straight
+  through, then LEFT-pads with "00" tokens to `width` bytes.
+- Frequencies use (space=1, reverse=1) -> LE ("446555500" -> "6C E5 9D 1A",
+  live-verified). EVERY ID field uses (space=1, reverse=0) -> BE digits,
+  left-padded: phoneid/callnumber/recgroup slots/secretkey (68 36),
+  callnumber (68 06, width 3), callnum (68 07, width 3).
+  "12345" -> "00 00 30 39" (4 B) / "00 30 39" (3 B). NOT "00 00 39 30".
+- Runs 6-12's LE claim came from the module echoing OUR builder's frame
+  (the sendstart notification reflects whatever bytes were programmed) --
+  never from the stock app's encoding. The module feeds bytes [1:4] of
+  the 4-byte field to the 24-bit DMR destination ID, so BE is what the
+  module expects; our run-6 V1 test (TG=12345) actually transmitted TG
+  14640 on the air (carrier test still valid; talkgroup was wrong).
+- All single-ID tests (TG=1, phoneid=1) are BE/LE-ambiguous, which is why
+  the error survived 7 runs of live verification.
+- FIXED: dmr007_frame.py + Dmr007Frame.java -- all ID call sites now
+  (true,false); frequencies stay (true,true). decode_channel_dump.id32
+  now strips leading zeros and reads big-endian. Self-tests: Python
+  68 06 start/stop + 165-byte CH36 + SMS "hi" vectors still byte-identical
+  (single-byte IDs unaffected); new assertions: "12345"->"00 00 30 39",
+  phoneid 26596 -> "00 00 67 E4" at payload [9:13], callnumber 12345 ->
+  "00 00 30 39" at payload [15:19], decode round-trip 26596/12345 OK.
+  Java self-test updated with the same vectors (syntax-checked; javac
+  not on this VM -- JDK was lost to a VM replacement).
+
+ENCRY[19] DEX-VERIFIED: encry.equals("0") -> v9="01", else v9="FF"
+(0x0097 if-eqz -> 0x0127 "FF", fall-through 0x0099 "01"). The inverted
+coding ("01" = encryption OFF) is exactly as the app has it; the live
+CHECK-DC readbacks (encry byte 0x01 for DB encry="0") match.
+
+FLAG[0] PARTIALLY CLOSED: stringToHex(Channel.getFlag(),1,0), 1 byte.
+Values are DB-driven; setFlag has no callers in this vdex (the channel
+editor lives elsewhere), so the full value set is not enumerable here.
+Known good: "1" (all our live tests, RF-confirmed) and 0x01 (factory
+stock channel, run-4 dump). Also present at 68 35 payload[1].
+
+68 06 CALLTYPE: dex uses stringToHex(calltype,0,0). With the dex's
+decimalToHex, value 0 yields "" (empty) -- a latent stock quirk (the
+11-byte frame with a doubled space); our port's zero-guard emits "00",
+which is the live-verified working form. Kept deliberately.
+
+ANALOG 68 35: all 1-byte fields verified as stringToHex(x,1,0) in the
+dex; output identical to our (1,1) for single bytes. Builder args
+aligned to the dex for fidelity; live-verified frame unchanged.
+
+NOT DONE (unchanged, still blocked): on-phone APK install +
+SDR-monitored app test (needs Doug); live inbound-SMS sample (needs a
+2nd DMR transmitter); msgtype "1" vs "2" module semantics;
+boot-indicator byte meaning. A live multi-byte-ID program+readback
+would be a nice confirmation of the BE fix when the ThinkPad is back.
+Status: frame builders now match the stock app's byte order on every
+field; protocol decode complete to the dex's limits. Runs used: 13/16.
+
+=====================================================================
+RUN 14/16 -- 2026-10-11 ~09:10-09:40 CDT: key-down int closed + 68 0C
+decoded + builder gaps filled (RE-only; ThinkPad still down, no TX)
+=====================================================================
+ACCESS: ThinkPad unreachable all run (forwarder 15922 closed, same as
+runs 12-13; likely powered off). No ADB to the S80, no SDR. All work in
+~/workspace/rumitx/oatdump-HcTTalkie.txt.
+
+KEY-DOWN INT VALUE -- CLOSED (not in the stock app):
+- The "remaining missing piece" (int the stock app sends with key-down)
+  is NOT in HcTTalkie.vdex: the ENTIRE dex contains ZERO callers of
+  SerialPort.talkie_ppt_down(int) / talkie_ppt_up(int) (dex_method_idx
+  2479/2480). The wrapper forwards its arg unchanged to the HIDL
+  ITalkiePort service, but nothing in this app calls it -- the PTT
+  keying is driven by the vendor HIDL service (separate process), not
+  by the stock app's Java.
+- Physical-PTT path traced: F9 key -> Fragment_speak.onKeyDown ->
+  startToSpeak(0, false) [vtable@125 confirmed = startToSpeak(int,
+  boolean): (0,0) on F9-down, (1,0) on F9-up, (1,0) on fragment hide];
+  startToSpeak -> packed-switch on the int (ACTION_DOWN/ACTION_UP blocks)
+  handling UI state (progress dialog, mKeyDown) only -- no ioctl, no
+  68 06 frame in this path. The 68 06 start/stop frames ARE sent by
+  ChatActivity.startSendSound/stopSendSound (send="01"/"FF" maps via
+  getATSetSend, dispatched through ReceiveDataPort.sendATCommond).
+- mHeadset semantics (Astra's HAL finding) stand: the ioctl arg is
+  0 = no headset, 1 = headset, supplied by the vendor service from its
+  own headset state (the app's registerHeadsetPlugReceiver only tracks
+  the broadcast for audio routing).
+- CONCLUSION: val 0 is correct and sufficient. The early "down 0 ->
+  OK but NO CARRIER" (v4/Astra tests) is fully explained: (a) the
+  rumitx-ptt helper auto-unkeys on stdin EOF, so piped `down 0` tests
+  unkeyed instantly and could never sustain a carrier (daily log
+  2026-10-11 line 231); (b) those tests ran at 9600 baud while the
+  module only answers at 57600. Our run-5/6 sequence (CH36 program ->
+  68 06 start -> KEY_DOWN val 0, helper kept alive) produced an RF
+  carrier on the SDR twice. Nothing further is needed from the stock
+  app on this question.
+
+68 0C AUTO-POWER FULLY DECODED (oatdump-HcTTalkie.txt line 51720):
+- getAtSetAutoPower(int): DMR007 -> "68 0C 01 01 <CS> 00 03 <01/00>
+  1E 02 10"; enable byte from (arg==1); "1E 02" hardcoded.
+  Non-DMR007 -> "AT+DMOAUTOPOWCONTR=<0|1>".
+- Caller: Fragment_Profile$4.onCheckedChanged -- the profile screen's
+  auto-power toggle (checked -> 1, unchecked -> 0). No other callers.
+
+MSGTYPE "1" vs "2" -- APP SIDE CLOSED, MODULE SIDE OPEN:
+- No code anywhere in the dex branches on msgtype: getMsgType() feeds
+  ONLY the 68 07 first payload byte and the chatdata row; setMsgType()
+  has ZERO callers in the vdex; all 33 stock channel DB rows use "2".
+  The app treats it as opaque channel metadata. What the module does
+  with "1" vs "2" remains open (needs a 2nd DMR transmitter); module
+  accepts "2" and transmits (RF-verified run 7).
+
+CODE:
+- dmr007_frame.py: added build_volume() (68 02), build_query() (0x25/
+  0x37/0x38/0x11 -- all four live-verified vectors byte-identical),
+  build_autopower() (68 0C). All checksum self-consistency checks pass.
+- Dmr007Frame.java: added buildAutoPower(boolean) + self-test asserts
+  (autopower-on vector "68 0C 01 01 93 C1 00 03 01 1E 02 10" matches the
+  Python builder byte-for-byte). Java syntax-checked via javalang (no
+  JDK on this VM). Java buildVolume/query vectors already matched Python.
+- APK rebuild deferred (needs JDK; install+test needs Doug awake anyway).
+
+NOT DONE (unchanged, still blocked): on-phone APK install +
+SDR-monitored app test (needs Doug); live inbound-SMS sample (needs a
+2nd DMR transmitter); msgtype "1" vs "2" module-side semantics;
+boot-indicator byte meaning. Live multi-byte-ID program+readback would
+confirm the BE fix when the ThinkPad is back.
+Status: TX-side protocol + all frame builders complete and
+cross-validated (Python <-> Java); remaining items all need hardware
+Doug or a 2nd transmitter. Runs used: 14/16.
+
+RUN 15/16 -- 2026-10-11 ~09:40-10:10 CDT: analog tone encoding decoded
+RE-only run (no phone, no TX). Doug asleep, no message (no
+breakthrough-class event -- tone table decode, no RF carrier).
+ThinkPad still unreachable (forwarders 15900/15901/15922 all refused;
+powered off). /tmp/oatdump.txt long gone; used the durable
+~/workspace/rumitx/oatdump-HcTTalkie.txt (90,120 lines) plus
+~/workspace/stock-talkie.apk resources (NEW source this run).
+
+HEADLINE -- TONE TYPE + TONE CODE FULLY DECODED (68 35):
+- Tone type (csstype): "0"=Carrier(none), "1"=CTCSS, "2"=CDCSS,
+  "3"=Reverse CDCSS, from the stock array/csstype resource
+  (aapt dump of stock-talkie.apk). Dex-confirmed: the getATSetGroup
+  HashMap builder feeds BOTH "txtype" and "rxtype" from the single
+  Channel.getCsstype() getter (vtable@15), so the stock app ALWAYS
+  programs rxtype == txtype (68 35 payload [11] == [13]).
+- Tone codes (txcxcss/rxcxcss): bare decimal index -> 1 byte each.
+  Fragment_Analog builds the picker lists at runtime: 51 options
+  (0-50, "CTCSS %d" labels) when csstype=="3", else 83 options
+  (0-82, "CDCSS %d" labels); factory default "1". The module maps
+  index -> physical tone via its own tables (not in the app).
+- Factory defaults (res/xml/default_talkie_channel.xml, decoded with
+  a hand-rolled AXML parser): 20 analog channels, 409.7500 MHz +
+  12.5 kHz steps, narrow, squelch 2, flag 1, csstype 2, tone 1,
+  phoneid = channel number, msgtype 2, encry 1, secretkey 12345678.
+
+ALSO NOTED (no doc change): array/calltype (Single/Group/No address/
+All) is UI-only; the 68 36 calltype byte values 0=group / 4=private
+stay as live-verified. encry byte semantics unchanged (0x01=off,
+0xFF=on); array/encry labels ("open"/"close") are ambiguous English.
+
+CODE: dmr007_frame.py build_set_group_analog() docstring now carries
+the tone semantics; added CSSTYPE_NAMES constant. All self-tests pass;
+tone-bearing analog vector verified
+("68 35 ... 02 02 01 02 01 10" = sq2/rxtype2/rxcxcss1/txtype2/txcxcss1).
+
+NOT DONE (unchanged, still blocked): on-phone APK install +
+SDR-monitored app test (needs Doug); live inbound-SMS sample (needs a
+2nd DMR transmitter); msgtype "1" vs "2" module-side semantics;
+boot-indicator byte meaning; physical tone per index (needs live
+module programming). Live multi-byte-ID program+readback would
+confirm the BE fix when the ThinkPad is back.
+Status: TX-side protocol + all frame builders complete and
+cross-validated (Python <-> Java); remaining items all need hardware
+Doug or a 2nd transmitter. Runs used: 15/16.
+
+=====================================================================
+RUN 16/16 -- 2026-10-11 ~10:07-10:25 CDT: final run, job disabled per body
+=====================================================================
+RE-only closure run (no phone, no TX). ThinkPad still unreachable --
+forwarders 15900/15901/15922 all connection-refused (powered off);
+no ADB path to the S80, no SDR. All local RE exhausted; every frame
+family decoded from the durable decompilation
+(~/workspace/rumitx/oatdump-HcTTalkie.txt, 90,120 lines).
+
+FINAL HEALTH CHECK (this run): all Python builders re-verified --
+build_send, build_set_group_analog, build_set_group_digital (165 B,
+lenfield 00 9C), build_sms ("hi" -> the stock-verified vector
+68 07 01 01 84 19 00 0C 02 00 00 01 00 68 00 69 00 00 00 00 10),
+build_autopower, build_query (CHECK-DC), build_volume; all 7
+self-checksums consistent, plus the live-verified tone vector
+("68 35 ... 02 02 01 02 01 10"). Builders are durable and stable.
+
+STOP CONDITION MET: run 16 of 16 completed with no NEW breakthrough
+(breakthroughs -- RF carrier on SDR (run 5) and fully decoded 68 36
+channel frame (runs 4-6) -- were achieved earlier in the campaign).
+Per the body, the rumitx-overnight-work cron job is now DISABLED.
+The overnight campaign stands as: TX-side protocol fully decoded and
+RF-verified (PTT voice, SMS), both channel frames live-verified,
+all frame builders cross-validated Python <-> Java, APK builds
+manually via build-apk.sh (last built ~07:47 CDT with the checksum
+quirk fix).
+
+REMAINING OPEN (still blocked, handed to Doug's awake session):
+1. Install RumiTX-debug.apk on the S80 via ThinkPad ADB + SDR-monitored
+   programChannel/PTT/SMS test of the rewritten app.
+2. Live inbound-SMS sample (needs a 2nd DMR transmitter).
+3. msgtype "1" vs "2" module-side semantics (app side closed: opaque).
+4. Boot-indicator 9-byte meaning (framing understood; module-side).
+5. Physical tone (Hz/DCS) per tone-code index (needs live programming).
+6. Live multi-byte-ID program+readback to confirm the BE ID fix
+   (run 13/16; pending ThinkPad return).
+Runs used: 16/16. Job: DISABLED 2026-10-11 ~10:25 CDT.

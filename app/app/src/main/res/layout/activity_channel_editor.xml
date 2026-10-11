@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- RumiTX Channel Editor: DIRECT ENTRY for everything. No charts. -->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Channel Name"
+            android:textStyle="bold" />
+        <EditText
+            android:id="@+id/edit_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="e.g., Repeater 1"
+            android:inputType="text" />
+
+        <!-- SPLIT FREQUENCIES — the headline feature -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="TX Frequency (MHz)"
+            android:textStyle="bold"
+            android:layout_marginTop="16dp" />
+        <EditText
+            android:id="@+id/edit_tx_freq"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="446.00625"
+            android:inputType="numberDecimal" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="RX Frequency (MHz)"
+            android:textStyle="bold"
+            android:layout_marginTop="8dp" />
+        <EditText
+            android:id="@+id/edit_rx_freq"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="446.09375"
+            android:inputType="numberDecimal" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Different TX/RX = repeater mode"
+            android:textSize="12sp" />
+
+        <!-- TONES — type the actual Hz, not a chart number -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="TX Tone (Hz)"
+            android:textStyle="bold"
+            android:layout_marginTop="16dp" />
+        <EditText
+            android:id="@+id/edit_tx_tone"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="100.0 (blank = none)"
+            android:inputType="numberDecimal" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="RX Tone (Hz)"
+            android:textStyle="bold"
+            android:layout_marginTop="8dp" />
+        <EditText
+            android:id="@+id/edit_rx_tone"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="100.0 (blank = none)"
+            android:inputType="numberDecimal" />
+
+        <!-- DMR -->
+        <Switch
+            android:id="@+id/switch_digital"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="DMR Digital Mode"
+            android:layout_marginTop="16dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Color Code (0-15)"
+            android:textStyle="bold"
+            android:layout_marginTop="8dp" />
+        <EditText
+            android:id="@+id/edit_color_code"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="1"
+            android:inputType="number" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Talkgroup"
+            android:textStyle="bold"
+            android:layout_marginTop="8dp" />
+        <EditText
+            android:id="@+id/edit_talkgroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="1"
+            android:inputType="number" />
+
+        <Button
+            android:id="@+id/save_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="SAVE CHANNEL"
+            android:textSize="18sp"
+            android:layout_marginTop="24dp" />
+    </LinearLayout>
+</ScrollView>
