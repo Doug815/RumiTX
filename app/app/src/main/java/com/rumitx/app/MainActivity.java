@@ -270,25 +270,30 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show());
     }
 
-    /** Test HIDL access to the vendor talkie service. Uses reflection to avoid compile-time dependency. */
+    /** HIDL RX initialization using the proper client. */
     private void testHidlAccess() {
         new Thread(() -> {
-            try {
-                Class<?> hwBinderClass = Class.forName("android.os.HwBinder");
-                java.lang.reflect.Method getService = hwBinderClass.getMethod(
-                    "getService", String.class, String.class);
-                Object service = getService.invoke(null,
-                    "vendor.hct.hardware.talkie@1.0::ITalkiePort", "default");
-                final String result = (service != null)
-                    ? "HIDL service FOUND"
-                    : "HIDL service returned null";
-                showToast(result);
-                android.util.Log.i("RumiTX", "HIDL test: " + result);
-            } catch (Exception e) {
-                final String err = "HIDL test failed: " + e.getMessage();
-                showToast(err);
-                android.util.Log.e("RumiTX", err, e);
+            TalkieHidlClient hidl = new TalkieHidlClient();
+            if (!hidl.findService()) {
+                showToast("HIDL service not found");
+                return;
             }
+            showToast("HIDL service FOUND");
+
+            // Try init and app_start
+            Integer initResult = hidl.init();
+            if (initResult == null) {
+                showToast("talkie_init failed");
+                return;
+            }
+
+            Integer startResult = hidl.appStart();
+            if (startResult == null) {
+                showToast("talkie_app_start failed");
+                return;
+            }
+
+            showToast("HIDL init OK (" + initResult + "/" + startResult + ") - speaker should chirp");
         }).start();
     }
 

@@ -1,0 +1,46 @@
+{
+  "project": "RumiTX 2030 S80 fresh-boot regression",
+  "generation_date": "2026-10-11",
+  "inputs": {
+    "RumiTX-debug-2026-10-11.apk": {
+      "sha256": "6c5c76abafa608a2b1a33b50872c8510d2717752db8c118e26ce7e84ac073436",
+      "bytes": 46213
+    },
+    "RumiTX_S80_HIDL_ARM64_BuildKit_2026-10-11.zip": {
+      "sha256": "cb5ac348c0937f22177ecf947a83d76543eefb81e763f5464d875433bd3bdb55",
+      "bytes": 13156
+    },
+    "stock-talkie-extract.zip": {
+      "sha256": "7c4dbbcc93ae9df73e80b147eb790d83f2dcd25f8210330db7b98734cf50b099",
+      "bytes": 888968
+    }
+  },
+  "verified_from_reverted_apk": [
+    "MainActivity.lambda$testHidlAccess$1 calls HwBinder.getService(String,String), checks non-null, but does not invoke hardware-change HIDL transaction",
+    "RadioController.connect requires TCP 127.0.0.1:45921, READY, pttCmd(start), pttCmd(serial), then UART open",
+    "RadioController.programChannel sends encoded frame and awaits response up to 5000ms",
+    "RadioController.pttDown sends DMR007 frame before helper down 0; UART failure can prevent TX ioctl",
+    "RumiTX APK does not package a native helper executable",
+    "RumiTX onKeyUp handles Android volume keycodes 24/25; internal buildVolume formatter clamps 0..10 while app UI uses 1..8"
+  ],
+  "verified_from_stock_vdex": [
+    "SerialPortService exposes talkieInit, talkieAppStart, talkieSpeakEnable, talkieSpeakDisable, talkieAppExit, talkieDeinit",
+    "Generated HIDL proxy transactions map to 1..9 including oneway speak_enable(callback)",
+    "Stock volume via ATCommond.getAtSetvolume and side volume key handlers 24/25"
+  ],
+  "not_proven": [
+    "Exact runtime cold-boot vendor init method ordering (stock VDEX has quickened method calls)",
+    "That HIDL talkie_init may always follow a helper APP_START safely",
+    "Kernel IRQ prerequisite and audio routing root cause",
+    "Actual live device return codes, kernel log, or audible output",
+    "Full Android app build or deployable ARM64 HIDL ELF; no Android toolchain and no full source"
+  ],
+  "compiled_artifact": "build/rumitx-recovery-coordinator-java8.jar",
+  "host_test": "PASS: five BootCoordinator host tests (JDK)",
+  "next": [
+    "Collect fresh reboot stage logs (do not change permissions blindly)",
+    "Rumi patches current source with explicit transport/HIDL checkpoints and one APP_START owner",
+    "Compile Android app and native HIDL client using Rumi Android 8.1 toolchain",
+    "Verify RX callback/IRQ/amplifier/audible audio independently and TX on authorized test frequency"
+  ]
+}
