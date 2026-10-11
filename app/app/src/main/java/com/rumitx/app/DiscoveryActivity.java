@@ -143,8 +143,9 @@ public class DiscoveryActivity extends Activity {
      * TODO: implement via module RSSI query or squelch status.
      */
     private boolean checkSignalPresent() {
-        // Placeholder — needs module RSSI/squelch query
-        return false;
+        // Module sends recstart (0x60) when squelch opens, recstop (0x6f)
+        // when it closes. RadioController tracks this from the serial stream.
+        return radio.isReceiving();
     }
 
     /**

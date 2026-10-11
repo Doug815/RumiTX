@@ -42,6 +42,11 @@ public class RadioController {
         return instance;
     }
 
+    /** True while the module reports receiving (recstart 0x60 seen,
+     * recstop 0x6f not yet seen). Updated by the serial reader thread. */
+    private volatile boolean receiving = false;
+    public boolean isReceiving() { return receiving; }
+
     // ------------------------------------------------------------------
     // Constants
     // ------------------------------------------------------------------
@@ -274,6 +279,12 @@ public class RadioController {
                         if (cmd < 0) continue;
                         Reply r = new Reply(cmd, raw);
                         replyQueue.offer(r);
+                        // Track receive state: sr=0x60 recstart, sr=0x6f recstop
+                        if (raw.length > 3) {
+                            int sr = raw[3] & 0xFF;
+                            if (sr == 0x60) receiving = true;
+                            else if (sr == 0x6f) receiving = false;
+                        }
                         if (callback != null)
                             callback.onResponse(r.hex);
                     }
