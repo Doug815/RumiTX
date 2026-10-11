@@ -247,8 +247,24 @@ public class MainActivity extends Activity {
             if (pttBtn != null) pttBtn.setText("HOLD TO TALK");
             return true;
         }
+        // Volume keys: adjust module RX volume (1-8, default 5)
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            rxVolume = Math.min(8, rxVolume + 1);
+            if (radio != null) radio.setVolume(rxVolume);
+            Toast.makeText(this, "Volume: " + rxVolume, Toast.LENGTH_SHORT).show();
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            rxVolume = Math.max(1, rxVolume - 1);
+            if (radio != null) radio.setVolume(rxVolume);
+            Toast.makeText(this, "Volume: " + rxVolume, Toast.LENGTH_SHORT).show();
+            return true;
+        }
         return super.onKeyUp(keyCode, event);
     }
+
+    /** Current RX volume level (1-8, stock default 5). */
+    private int rxVolume = 5;
 
     /** Test HIDL access to the vendor talkie service. Uses reflection to avoid compile-time dependency. */
     private void testHidlAccess() {
