@@ -124,7 +124,8 @@ public class DiscoveryActivity extends Activity {
                 }
 
                 final double progress = (freq - scanStartMHz) / (scanEndMHz - scanStartMHz);
-                uiHandler.post(() -> updateProgress(progress));
+                final double fNow = freq;
+                uiHandler.post(() -> updateProgress(progress, fNow));
 
                 freq += scanStepKHz / 1000.0;
             }
@@ -210,8 +211,11 @@ public class DiscoveryActivity extends Activity {
         // TODO: add to results ListView
     }
 
-    private void updateProgress(double fraction) {
-        // TODO: update ProgressBar
+    private void updateProgress(double fraction, double freqMHz) {
+        android.widget.ProgressBar bar = findViewById(R.id.scan_progress);
+        bar.setProgress((int) (fraction * 100));
+        android.widget.TextView freqNow = findViewById(R.id.scan_freq_now);
+        freqNow.setText(String.format("%.4f MHz", freqMHz));
     }
 
     private void onScanComplete() {
