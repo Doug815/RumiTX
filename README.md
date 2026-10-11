@@ -69,6 +69,12 @@ Stay tuned.
 ![Channel Editor](assets/rumitx-channel-editor.png)
 *Channel programmer — repeater mode, tones, DMR digital, color code, talkgroup*
 
+![Discovery Scan](assets/rumitx-discovery.png)
+*Discovery mode — scan a band, find signals, tap to save*
+
+<video src="assets/rumitx-discovery-demo.mp4" controls width="300"></video>
+*Discovery scan in action*
+
 ---
 
 ## Original Technical Notes
