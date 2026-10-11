@@ -66,6 +66,9 @@ public class MainActivity extends Activity {
                     Toast.LENGTH_LONG).show();
         }
 
+        // Test HIDL access (for RX audio via vendor service)
+        testHidlAccess();
+
         // Wire up buttons
         Button pttBtn = findViewById(R.id.ptt_button);
         Button addBtn = findViewById(R.id.add_channel_btn);
@@ -245,6 +248,31 @@ public class MainActivity extends Activity {
             return true;
         }
         return super.onKeyUp(keyCode, event);
+    }
+
+    /** Test HIDL access to the vendor talkie service. Uses reflection to avoid compile-time dependency. */
+    private void testHidlAccess() {
+        new Thread(() -> {
+            try {
+                // Try android.os.HwBinder.getService via reflection
+                Class<?> hwBinderClass = Class.forName("android.os.HwBinder");
+                java.lang.reflect.Method getService = hwBinderClass.getMethod(
+                    "getService", String.class, String.class);
+                Object service = getService.invoke(null,
+                    "vendor.hct.hardware.talkie@1.0::ITalkiePort", "default");
+                final String result = (service != null)
+                    ? "HIDL service FOUND: " + service.getClass().getName()
+                    : "HIDL service returned null";
+                runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                    result, Toast.LENGTH_LONG).show());
+                android.util.Log.i("RumiTX", "HIDL test: " + result);
+            } catch (Exception e) {
+                final String err = "HIDL test failed: " + e.getMessage();
+                runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                    err, Toast.LENGTH_LONG).show());
+                android.util.Log.e("RumiTX", err, e);
+            }
+        }).start();
     }
 
     /** Activate a channel: program TX/RX frequencies, tones, DMR settings. */

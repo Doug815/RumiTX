@@ -1,0 +1,26 @@
+RumiTX 2030 - DOOGEE S80 RX audio architecture question. We found the root cause, need your guidance on the cleanest fix.
+
+WHAT WE PROVED TODAY (kernel logs + HAL disassembly)
+- The stock Talkie app produces RX audio (static + voice) through the HIDL service vendor.hct.hardware.talkie@1.0-service.
+- Kernel log during working stock RX shows this exact sequence:
+    1. hct_eint_speaken_isr: enter  (GPIO interrupt fires)
+    2. hct_wait_speak_en: enter     (HIDL service thread calls the ioctl)
+    3. "before enable aw pa, sleep 100ms"  (driver powers the audio amplifier)
+  The ioctl RETURNS. Audio flows.
+- When our native daemon calls ioctl(/dev/hctintercom_node, 0x80046905, &int) directly, it blocks forever in hct_wait_speak_en. The interrupt never fires. We never did the GPIO setup.
+- Before the working sequence, the HIDL service sets GPIO 58, 17, 18, 68 down (seen in dmesg from PID 7504 talkie@1.0-service).
+- Disassembly of talkie.default.so speak_enable(): it just does ioctl(fd, 0x80046905, &stack_int), no magic. The fd comes from a global (opened in talkie_init). If ioctl fails it logs "Call cmd INTERCOM_SPEAK_ENABLE fail" and returns -1; on success it returns the int the kernel wrote back.
+- Our current architecture: app -> TCP 127.0.0.1:45921 -> native daemon (started from adb shell) -> direct ioctl on /dev/hctintercom_node. TX works (KEY_DOWN 0x40046903). We never touch HIDL. We never touch GPIO.
+
+THE CORE PROBLEM
+The RX audio path requires a GPIO-triggered hardware interrupt BEFORE the SPEAK_ENABLE ioctl will return. The HIDL service owns that sequence. Our direct-ioctl bypass works for TX (which doesn't need the interrupt) but deadlocks on RX audio.
+
+We cannot modify the kernel. Everything must work from userspace (adb shell daemon + Android app, no root at runtime on the app side; the daemon runs as shell).
+
+QUESTIONS
+1. What is the minimal GPIO/userspace sequence to trigger hct_eint_speaken_isr without going through the HIDL service? We saw gpio58/17/18/68 set down by the HIDL service. Are these accessible from userspace via /sys/class/gpio on the S80 (MediaTek MT6763T, Android 8.1)? If yes, what values and ordering replicate the interrupt? If no, is there another userspace trigger (e.g. a different ioctl that primes the interrupt)?
+2. Alternative: can our native daemon bind to the HIDL service vendor.hct.hardware.talkie@1.0::ITalkiePort directly (via libhidlbase from a shell-context native binary) and call talkie_speak_enable + talkie_init, letting the vendor service own the GPIO/IRQ sequence? What are the SELinux realities on Android 8.1 — will a shell-context native process be allowed to find and call this HAL service, or is it restricted to specific domains?
+3. Alternative: hybrid approach — keep our direct-ioctl daemon for TX and channel programming (works fine), but delegate ONLY the RX-audio enable to the HIDL service. Is there a way to trigger the HIDL service's speak_enable without the stock app running (e.g. via `lshal` call, a binder transaction from shell, or starting the stock service component headless)? We noticed the stock app doesn't need to be in the foreground — the HIDL service (PID 7504) runs independently.
+4. Which of these three paths (GPIO replication, HIDL binding from native daemon, hybrid delegation) would you bet on for a reliable userspace-only solution, and what is the first concrete experiment to validate it?
+
+Goal remains: 2030-grade open Talkie replacement, TX already on the air, RX audio is the last wall. No kernel rebuild, no root required at runtime.

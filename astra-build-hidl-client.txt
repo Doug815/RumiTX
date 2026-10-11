@@ -1,0 +1,47 @@
+RumiTX 2030 - Need you to build the HIDL client binary.
+
+STATUS
+We verified on the DOOGEE S80:
+- HIDL service vendor.hct.hardware.talkie@1.0::ITalkiePort/default is running and visible via lshal
+- Shell SELinux context is u:r:shell:s0, and getenforce returns Permissive (not Enforcing)
+- The service is reachable in principle from a shell-context native binary
+- BUT: there is no vendor.hct.hardware.talkie@1.0.so client library on the device in /vendor/lib64 or /vendor/lib
+
+WHAT WE HAVE
+- Your reconstructed ITalkiePort.hal and ITalkiePortCallback.hal (in the starter package)
+- The transaction map from the stock vdex:
+    talkie_init() -> 1, int32
+    talkie_deinit() -> 2, int32
+    talkie_app_start() -> 3, int32
+    talkie_app_exit() -> 4, int32
+    talkie_ppt_down(int32) -> 5, int32
+    talkie_ppt_up(int32) -> 6, int32
+    talkie_speak_disable() -> 7, int32
+    talkie_update() -> 8, int32
+    talkie_speak_enable(callback) -> 9, void, oneway with ITalkiePortCallback
+- Callback interface: reportResults(int32)
+- Target: ARM64 (aarch64), Android 8.1, to run from adb shell (not as an app)
+
+WHAT WE NEED YOU TO BUILD
+A minimal native ARM64 HIDL client binary that:
+1. Calls ITalkiePort::getService("default") and confirms the service is reachable (print success/fail, no hardware changes)
+2. If reachable, implements the full RX sequence:
+   a. talkie_init()
+   b. talkie_app_start()
+   c. Create an ITalkiePortCallback implementation that prints reportResults(int32) when invoked
+   d. Call oneway talkie_speak_enable(callback) — must return immediately, not block
+   e. Wait for the callback (with a 30-second timeout), print the result
+   f. On success or timeout, call talkie_speak_disable(), talkie_app_exit(), talkie_deinit()
+3. Must NOT touch the TX path (our direct-ioctl daemon handles TX fine and must keep working)
+4. Must run as a standalone binary from adb shell, no app context required
+
+BUILD REQUIREMENTS
+- Use the Android NDK HIDL toolchain (hidl-gen) to generate the C++ client from the .hal files
+- Link against libhidlbase, libutils, libhwbinder as needed for Android 8.1
+- Static linking preferred (the device may not have all shared libs for a shell-context binary)
+- Output: a single ARM64 binary we can push via adb and run
+
+If static linking isn't feasible, list the exact shared library dependencies so we can verify they exist on the S80.
+
+GOAL
+Prove that a shell-context native binary can drive the vendor HIDL service for RX audio, using the same async pattern as the stock app. If this works, we integrate it into the RumiTX daemon as the RX path (keeping direct ioctl for TX).
