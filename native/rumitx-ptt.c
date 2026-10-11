@@ -125,14 +125,41 @@ int main(int argc, char **argv) {
         }
         if (listen(srv, 1) < 0) { printf("ERR listen %d\n", errno); return 1; }
         printf("TCP_LISTEN 45921\n"); fflush(stdout);
-        int cli = accept(srv, NULL, NULL);
-        if (cli < 0) { printf("ERR accept %d\n", errno); return 1; }
-        close(srv);
-        dup2(cli, 0);
-        dup2(cli, 1);
-        if (cli > 1) close(cli);
-        /* stdout is now the socket; make it unbuffered for prompt replies */
-        setvbuf(stdout, NULL, _IONBF, 0);
+        /* TCP server loop: accept clients one at a time, forever.
+         * When a client disconnects, unkey and wait for the next. */
+        for (;;) {
+            int cli = accept(srv, NULL, NULL);
+            if (cli < 0) continue;
+            /* Save original stdin/stdout for the first connection only */
+            dup2(cli, 0);
+            dup2(cli, 1);
+            if (cli > 1) close(cli);
+            setvbuf(stdout, NULL, _IONBF, 0);
+
+            printf("READY\n"); fflush(stdout);
+            char line[128];
+            int client_done = 0;
+            while (!client_done) {
+                fd_set rf; FD_ZERO(&rf); FD_SET(0, &rf);
+                struct timeval tv = {1, 0};
+                int n = select(1, &rf, NULL, NULL, &tv);
+                if (keyed && time(NULL) - key_time >= tx_timeout) {
+                    unkey(); printf("WATCHDOG unkey\n"); fflush(stdout);
+                }
+                if (n <= 0) continue;
+                if (!fgets(line, sizeof line, stdin)) {
+                    client_done = 1;  /* client disconnected */
+                    break;
+                }
+                char cmd[32] = {0}; int val = 0;
+                int k = sscanf(line, "%31s %d", cmd, &val);
+                if (k < 1) continue;
+                if (!strcmp(cmd, "quit")) { client_done = 1; break; }
+                run(cmd, val, k >= 2);
+            }
+            unkey();  /* safety: never leave keyed on disconnect */
+            /* Loop back to accept() -- do NOT close(srv) */
+        }
     }
 
     if (argc >= 2) { /* one-shot mode */
