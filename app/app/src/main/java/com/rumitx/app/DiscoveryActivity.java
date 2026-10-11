@@ -34,7 +34,7 @@ public class DiscoveryActivity extends Activity {
     private double scanStartMHz = 440.0;
     private double scanEndMHz = 450.0;
     private double scanStepKHz = 12.5;
-    private int dwellMs = 500; // time per step listening for activity
+    private int dwellMs = 100; // time per step listening for activity (was 500; 100ms = ~10 ch/sec)
 
     public static class ScanResult {
         public double freqMHz;
