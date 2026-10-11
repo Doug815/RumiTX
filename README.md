@@ -58,6 +58,16 @@ Stay tuned.
 
 ---
 
+## Screenshots
+
+![Main Interface](assets/rumitx-main-ui.png)
+*The 2030 main interface — 446.5555 MHz analog, RX standby*
+
+![TX Active](assets/rumitx-tx-active.png)
+*Transmitting — activity telemetry shows TX bars*
+
+---
+
 ## Original Technical Notes
 
 An open replacement for the stock Talkie app on the **DOOGEE S80** rugged phone —
