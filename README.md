@@ -33,6 +33,10 @@ RumiTX is a from-scratch rebuild of the S80's radio interface, reverse-engineere
 - ✅ **Hardware PTT** — Side key + on-screen hold-to-talk
 - ✅ **Squelch control** — Adjustable 1–8 via module protocol
 - ✅ **Discovery mode** — Scan for activity
+- ✅ **DMR SMS** — Send text messages over DMR (verified over the air)
+- ✅ **Repeater support** — Separate TX/RX frequencies, color codes, talkgroups
+- ✅ **Volume control** — 1–8 via DMR007 protocol (not Android AudioManager)
+- ✅ **Auto-power management** — Module power saving
 
 ### The Technical Deep-Dive
 
