@@ -82,12 +82,7 @@ static void on_signal(int s) {
 
 static int run(const char *cmd, int val, int have_val) {
     int arg = 0, r;
-    if (!strcmp(cmd, "start"))        { r = do_ioctl(INTERCOM_APP_START, &arg);
-                                      if (!r) {
-                                          /* Enable RX speaker audio on startup */
-                                          int sarg = 0;
-                                          do_ioctl(INTERCOM_SPEAK_ENABLE, &sarg);
-                                      } }
+    if (!strcmp(cmd, "start"))        { r = do_ioctl(INTERCOM_APP_START, &arg); }
     else if (!strcmp(cmd, "exit"))    { unkey(); r = do_ioctl(INTERCOM_APP_EXIT, &arg); }
     else if (!strcmp(cmd, "down"))    { arg = have_val ? val : 0; r = do_ioctl(INTERCOM_KEY_DOWN, &arg);
                                         if (!r) { keyed = 1; key_val = arg; key_time = time(NULL); } }
