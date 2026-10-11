@@ -29,6 +29,7 @@ public class MainActivity extends Activity {
 
     private RadioController radio;
     private ChannelDatabase db;
+    private Channel activeChannel;
     private static final int REQ_AUDIO = 1;
 
     @Override
@@ -70,6 +71,27 @@ public class MainActivity extends Activity {
         Button addBtn = findViewById(R.id.add_channel_btn);
         Button discBtn = findViewById(R.id.discovery_btn);
         ListView channelList = findViewById(R.id.channel_list);
+
+        // Squelch control (0-9, default 1 for open squelch)
+        android.widget.SeekBar sqSeek = findViewById(R.id.squelch_seek);
+        android.widget.TextView sqVal = findViewById(R.id.squelch_value);
+        sqSeek.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(android.widget.SeekBar sb, int progress, boolean fromUser) {
+                sqVal.setText(String.valueOf(progress));
+            }
+            @Override public void onStartTrackingTouch(android.widget.SeekBar sb) {}
+            @Override public void onStopTrackingTouch(android.widget.SeekBar sb) {
+                int level = sb.getProgress();
+                // Update active channel's squelch and reprogram
+                if (activeChannel != null) {
+                    activeChannel.squelchLevel = level;
+                    db.saveChannel(activeChannel);
+                    new Thread(() -> radio.programChannel(activeChannel)).start();
+                    Toast.makeText(MainActivity.this,
+                            "Squelch set to " + level, Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
 
         // PTT: hold to talk
         pttBtn.setOnTouchListener(new View.OnTouchListener() {
@@ -227,6 +249,7 @@ public class MainActivity extends Activity {
 
     /** Activate a channel: program TX/RX frequencies, tones, DMR settings. */
     private void activateChannel(Channel ch) {
+        activeChannel = ch;
         if (radio.programChannel(ch)) {
             String msg = ch.name + ": ";
             if (ch.isSplitFrequency()) {
