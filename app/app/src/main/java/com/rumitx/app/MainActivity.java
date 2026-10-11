@@ -1,7 +1,10 @@
 package com.rumitx.app;
 
 import android.Manifest;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.view.KeyEvent;
@@ -40,7 +43,7 @@ public class MainActivity extends Activity {
                     new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
         }
 
-        radio = new RadioController();
+        radio = RadioController.getInstance();
         db = new ChannelDatabase(this);
 
         // Seed a default test channel on first run so the radio is
@@ -118,6 +121,41 @@ public class MainActivity extends Activity {
                 }
             }
         });
+
+        // Remote programming: adb shell am broadcast -a com.rumitx.app.PROGRAM_CHANNEL
+        //   --es name "MyChan" --es tx "446.1000" --es rx "446.1000"
+        //   --es digital "1" --es cc "1" --es tg "1" [--es activate "1"]
+        registerReceiver(new BroadcastReceiver() {
+            @Override public void onReceive(Context ctx, Intent intent) {
+                try {
+                    Channel ch = new Channel();
+                    ch.name = intent.getStringExtra("name");
+                    if (ch.name == null) ch.name = "Remote";
+                    ch.txFreqMHz = Double.parseDouble(
+                            intent.getStringExtra("tx"));
+                    String rx = intent.getStringExtra("rx");
+                    ch.rxFreqMHz = (rx != null) ? Double.parseDouble(rx)
+                                               : ch.txFreqMHz;
+                    ch.isDigital = !"0".equals(intent.getStringExtra("digital"));
+                    String cc = intent.getStringExtra("cc");
+                    if (cc != null) ch.colorCode = Integer.parseInt(cc);
+                    String tg = intent.getStringExtra("tg");
+                    if (tg != null) ch.talkgroup = Integer.parseInt(tg);
+                    db.saveChannel(ch);
+                    refreshChannelList();
+                    if (!"0".equals(intent.getStringExtra("activate"))) {
+                        activateChannel(ch);
+                        updateActiveChannel(ch);
+                    }
+                    Toast.makeText(MainActivity.this,
+                            "Programmed: " + ch.name, Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    Toast.makeText(MainActivity.this,
+                            "Remote program failed: " + e.getMessage(),
+                            Toast.LENGTH_LONG).show();
+                }
+            }
+        }, new IntentFilter("com.rumitx.app.PROGRAM_CHANNEL"));
     }
 
     private void refreshChannelList() {

@@ -34,6 +34,14 @@ import java.util.concurrent.TimeUnit;
  */
 public class RadioController {
 
+    /** Singleton: the radio hardware has one TCP connection; all
+     * activities must share it. Use getInstance(), not new. */
+    private static RadioController instance;
+    public static synchronized RadioController getInstance() {
+        if (instance == null) instance = new RadioController();
+        return instance;
+    }
+
     // ------------------------------------------------------------------
     // Constants
     // ------------------------------------------------------------------

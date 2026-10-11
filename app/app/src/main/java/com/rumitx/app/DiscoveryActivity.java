@@ -50,7 +50,7 @@ public class DiscoveryActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_discovery);
         uiHandler = new Handler(Looper.getMainLooper());
-        radio = new RadioController();
+        radio = RadioController.getInstance();
         db = new ChannelDatabase(this);
         radio.connect();
 
