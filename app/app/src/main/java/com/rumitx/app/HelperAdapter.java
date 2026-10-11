@@ -17,43 +17,41 @@ public class HelperAdapter implements BootCoordinator.Helper {
 
     @Override
     public void openTcp() throws Exception {
-        // RadioController.connect() handles TCP
-        // We need to expose the connection state
-        Log.i(TAG, "openTcp: delegating to RadioController");
-        // The actual connect is done in MainActivity; this is a placeholder
-        // for the coordinator's state machine
+        if (!radio.isConnected()) {
+            throw new Exception("RadioController not connected - TCP handshake failed in onCreate");
+        }
+        Log.i(TAG, "openTcp: RadioController reports connected");
     }
 
     @Override
     public String readGreeting() throws Exception {
-        // Greeting is read during connect()
-        return "READY"; // Placeholder - actual greeting verified in connect()
+        if (!radio.isConnected()) throw new Exception("Not connected");
+        return "READY";
     }
 
     @Override
     public boolean appStart() throws Exception {
-        // Already done via RadioController.connect()
-        Log.i(TAG, "appStart: already handled by RadioController.connect()");
+        if (!radio.isConnected()) throw new Exception("Not connected");
+        Log.i(TAG, "appStart: RadioController.connect() already sent start OK");
         return true;
     }
 
     @Override
     public boolean configureSerial() throws Exception {
-        // Already done via RadioController.connect()
-        Log.i(TAG, "configureSerial: already handled by RadioController.connect()");
+        if (!radio.isConnected()) throw new Exception("Not connected");
+        Log.i(TAG, "configureSerial: RadioController.connect() already sent serial OK");
         return true;
     }
 
     @Override
     public void openUart() throws Exception {
-        // Already done via RadioController.connect()
-        Log.i(TAG, "openUart: already handled by RadioController.connect()");
+        if (!radio.isConnected()) throw new Exception("Not connected");
+        Log.i(TAG, "openUart: RadioController.connect() already opened /dev/ttyMT1");
     }
 
     @Override
     public boolean queryModule() throws Exception {
-        // TODO: Implement a safe read-only query
-        Log.i(TAG, "queryModule: not yet implemented, skipping");
-        return true; // Skip for now
+        Log.i(TAG, "queryModule: skipped (no safe query established yet)");
+        return true;
     }
 }

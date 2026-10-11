@@ -278,6 +278,19 @@ public class MainActivity extends Activity {
                     android.util.Log.i("RumiTX-Coord", msg));
 
             try {
+                // RadioController already connected in onCreate.
+                // Use a Helper adapter that reflects the existing connection.
+                HelperAdapter helper = new HelperAdapter(radio);
+                com.rumitx.recovery.BootCoordinator.Outcome helperOutcome =
+                    coordinator.verifyHelper(helper, false);
+
+                android.util.Log.i("RumiTX", "Helper stage: " + helperOutcome.stage);
+                if (helperOutcome.stage ==
+                        com.rumitx.recovery.BootCoordinator.Stage.FAILED) {
+                    showToast("Transport failed: " + helperOutcome.failure);
+                    return;
+                }
+
                 HidlAdapter hidl = new HidlAdapter();
                 com.rumitx.recovery.BootCoordinator.Outcome outcome =
                     coordinator.enableRx(hidl,
