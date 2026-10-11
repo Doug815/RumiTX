@@ -43,6 +43,19 @@ public class MainActivity extends Activity {
         radio = new RadioController();
         db = new ChannelDatabase(this);
 
+        // Seed a default test channel on first run so the radio is
+        // usable (and remotely testable) without manual entry.
+        if (db.getAllChannels().isEmpty()) {
+            Channel seed = new Channel();
+            seed.name = "Test 446.5555";
+            seed.txFreqMHz = 446.5555;
+            seed.rxFreqMHz = 446.5555;
+            seed.isDigital = true;
+            seed.colorCode = 1;
+            seed.talkgroup = 1;
+            db.saveChannel(seed);
+        }
+
         // Connect to DMR module
         if (!radio.connect()) {
             Toast.makeText(this, "Could not open radio — is the module ready?",

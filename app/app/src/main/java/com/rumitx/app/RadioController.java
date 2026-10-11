@@ -110,33 +110,43 @@ public class RadioController {
     public synchronized boolean connect() {
         if (connected) return true;
         try {
-            // 1. Start the PTT helper as root and keep it running.
-            pttProc = Runtime.getRuntime().exec(
-                    new String[]{"su", "-c", PTT_HELPER});
+            android.util.Log.i("RumiTX", "connect: launching helper");
+            // 1. Start the PTT helper and keep it running. No root
+            // needed: /dev/ttyMT1 and /dev/hctintercom_node are both
+            // 666 on the S80 (stock init.talkie.rc), SELinux permissive
+            // during testing.
+            pttProc = new ProcessBuilder(PTT_HELPER)
+                    .redirectErrorStream(true).start();
+            android.util.Log.i("RumiTX", "connect: helper launched");
             pttIn = pttProc.getOutputStream();
             pttOut = new BufferedReader(
                     new InputStreamReader(pttProc.getInputStream()));
             String ready = pttOut.readLine();
+            android.util.Log.i("RumiTX", "connect: helper said: " + ready);
             if (ready == null || !ready.startsWith("READY")) {
                 reportError("PTT helper did not print READY");
                 return false;
             }
 
             // 2. APP_START ioctl so the module powers its serial side.
+            android.util.Log.i("RumiTX", "connect: sending start");
             if (!pttCmd("start")) {
                 reportError("helper 'start' (APP_START) failed");
                 return false;
             }
+            android.util.Log.i("RumiTX", "connect: start OK");
 
             // 3. Configure the UART at 57600 8N1 raw. The deployed
             // helper's "serial" command hard-codes 9600 (wrong baud --
             // the stock app opens the port at 57600), so configure via
             // stty instead. Do NOT touch the phone's helper binary.
+            android.util.Log.i("RumiTX", "connect: configuring serial");
             if (!configureSerial()) {
                 reportError("could not set " + SERIAL_PORT
                         + " to 57600 8N1");
                 return false;
             }
+            android.util.Log.i("RumiTX", "connect: serial OK");
 
             File f = new File(SERIAL_PORT);
             if (!f.exists()) {
@@ -159,6 +169,7 @@ public class RadioController {
             drain(2500);
             return true;
         } catch (Exception e) {
+            android.util.Log.e("RumiTX", "connect FAILED: " + e);
             reportError("connect: " + e);
             connected = false;
             return false;
@@ -191,24 +202,12 @@ public class RadioController {
     public boolean isConnected() { return connected; }
     public boolean isKeyed() { return keyed; }
 
-    /** su + stty: 57600 8N1 raw, verified by readback. */
+    /**
+     * Configure the UART at 57600 8N1 raw via the helper's "serial"
+     * command (the helper binary sets B57600). No root, no stty needed.
+     */
     private boolean configureSerial() {
-        try {
-            Process p = Runtime.getRuntime().exec(new String[]{
-                    "su", "-c",
-                    "stty -F " + SERIAL_PORT + " 57600 raw -echo"});
-            if (!p.waitFor(10, TimeUnit.SECONDS) || p.exitValue() != 0)
-                return false;
-            Process q = Runtime.getRuntime().exec(new String[]{
-                    "su", "-c", "stty -F " + SERIAL_PORT});
-            BufferedReader r = new BufferedReader(
-                    new InputStreamReader(q.getInputStream()));
-            String line = r.readLine();
-            q.waitFor(10, TimeUnit.SECONDS);
-            return line != null && line.contains("57600");
-        } catch (Exception e) {
-            return false;
-        }
+        return pttCmd("serial");
     }
 
     // ------------------------------------------------------------------
