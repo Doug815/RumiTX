@@ -67,6 +67,63 @@ public class TalkieHidlClient {
         }
     }
 
+    /** Submit talkie_speak_enable (oneway, transaction 9) with a callback. */
+    public void submitSpeakEnable(SpeakEnableCallback callback) throws Exception {
+        // For oneway, we need to pass the callback binder in the request parcel
+        // This is complex - for now, submit without callback and log
+        // TODO: Implement proper callback binder
+        Log.i(TAG, "submitSpeakEnable: oneway transaction 9 (callback not yet implemented)");
+        Object reply = transact(TRANSACTION_SPEAK_ENABLE, 1); // 1 = oneway flag
+        Log.i(TAG, "speak_enable submitted (oneway)");
+        // Note: callback will not fire without proper binder implementation
+    }
+
+    /** Call talkie_speak_disable() via transact. */
+    public Integer speakDisable() {
+        try {
+            Object reply = transact(7, 0); // transaction 7 = speak_disable
+            if (reply == null) return null;
+            Class<?> hwParcelClass = Class.forName("android.os.HwParcel");
+            java.lang.reflect.Method readInt32 = hwParcelClass.getMethod("readInt32");
+            return (Integer) readInt32.invoke(reply);
+        } catch (Exception e) {
+            Log.e(TAG, "speak_disable failed", e);
+            return null;
+        }
+    }
+
+    /** Call talkie_app_exit() via transact. */
+    public Integer appExit() {
+        try {
+            Object reply = transact(4, 0); // transaction 4 = app_exit
+            if (reply == null) return null;
+            Class<?> hwParcelClass = Class.forName("android.os.HwParcel");
+            java.lang.reflect.Method readInt32 = hwParcelClass.getMethod("readInt32");
+            return (Integer) readInt32.invoke(reply);
+        } catch (Exception e) {
+            Log.e(TAG, "app_exit failed", e);
+            return null;
+        }
+    }
+
+    /** Call talkie_deinit() via transact. */
+    public Integer deinit() {
+        try {
+            Object reply = transact(2, 0); // transaction 2 = deinit
+            if (reply == null) return null;
+            Class<?> hwParcelClass = Class.forName("android.os.HwParcel");
+            java.lang.reflect.Method readInt32 = hwParcelClass.getMethod("readInt32");
+            return (Integer) readInt32.invoke(reply);
+        } catch (Exception e) {
+            Log.e(TAG, "deinit failed", e);
+            return null;
+        }
+    }
+
+    public interface SpeakEnableCallback {
+        void onResult(int value);
+    }
+
     /**
      * Perform a HIDL transact call.
      * @param code Transaction ID

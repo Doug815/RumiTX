@@ -270,30 +270,33 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show());
     }
 
-    /** HIDL RX initialization using the proper client. */
+    /** Test HIDL access to the vendor talkie service. Uses reflection to avoid compile-time dependency. */
     private void testHidlAccess() {
         new Thread(() -> {
-            TalkieHidlClient hidl = new TalkieHidlClient();
-            if (!hidl.findService()) {
-                showToast("HIDL service not found");
-                return;
-            }
-            showToast("HIDL service FOUND");
+            com.rumitx.recovery.BootCoordinator coordinator =
+                new com.rumitx.recovery.BootCoordinator(msg ->
+                    android.util.Log.i("RumiTX-Coord", msg));
 
-            // Try init and app_start
-            Integer initResult = hidl.init();
-            if (initResult == null) {
-                showToast("talkie_init failed");
-                return;
-            }
+            try {
+                HidlAdapter hidl = new HidlAdapter();
+                com.rumitx.recovery.BootCoordinator.Outcome outcome =
+                    coordinator.enableRx(hidl,
+                        com.rumitx.recovery.BootCoordinator.AppStartOwner.HELPER,
+                        30);
 
-            Integer startResult = hidl.appStart();
-            if (startResult == null) {
-                showToast("talkie_app_start failed");
-                return;
-            }
+                final String result = "RX init: " + outcome.stage +
+                    (outcome.failure != null ? " FAILED: " + outcome.failure : " OK") +
+                    (outcome.callbackValue != null ? " callback=" + outcome.callbackValue : "");
 
-            showToast("HIDL init OK (" + initResult + "/" + startResult + ") - speaker should chirp");
+                showToast(result);
+                android.util.Log.i("RumiTX", result);
+                for (String event : outcome.events()) {
+                    android.util.Log.i("RumiTX-Coord", "  " + event);
+                }
+            } catch (Exception e) {
+                showToast("Coordinator failed: " + e.getMessage());
+                android.util.Log.e("RumiTX", "Coordinator failed", e);
+            }
         }).start();
     }
 
