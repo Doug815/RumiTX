@@ -1,0 +1,27 @@
+RumiTX TX Regression Fix - Package Files
+
+Copy-paste this prompt to the model, then give it the source ZIP link below.
+
+=== PROMPT ===
+https://drive.google.com/file/d/1WLvS7tvL3AjL-CNCkcYKdX3giVkK7Bl3/view?usp=drivesdk
+
+=== SOURCE CODE (full project ZIP) ===
+https://drive.google.com/file/d/1IZpWFcexghG9mNtYjKfFJhw4HIMaWlA6/view?usp=drivesdk
+Contains: app source, native daemon source, DMR007 protocol, Astra recovery package, working APKs
+
+=== CURRENT BUILD (v2.2 - RX works, TX broken) ===
+https://drive.google.com/file/d/1qEohc4VTfSlag6E-mQmpKJRQgpcQbR2L/view?usp=drivesdk
+Note: This is the coordinator version. The model built v2.2 from this.
+
+=== LOGS (v2.1 - PTT crash + HIDL timeout) ===
+https://drive.google.com/file/d/1A8MsyygG19F4bdvsTdsWyxnTcnjIwSB9/view?usp=drivesdk
+
+=== LOGS (v2.2 - HIDL callback fires, TX regression) ===
+https://drive.google.com/file/d/1ExW9_yJfXnfa4dUP4q2MqO2xanKLP-7c/view?usp=drivesdk
+
+=== INSTRUCTIONS FOR THE MODEL ===
+1. Download the prompt file first - it has the focused fix request
+2. Download the source ZIP - it has everything needed to build
+3. Fix ONLY the TX regression (PTT produces no RF)
+4. Do NOT change HIDL, RX, UI, or anything else
+5. Return a fixed APK
