@@ -266,26 +266,53 @@ public class MainActivity extends Activity {
     /** Current RX volume level (1-8, stock default 5). */
     private int rxVolume = 5;
 
-    /** Test HIDL access to the vendor talkie service. Uses reflection to avoid compile-time dependency. */
+    private void showToast(String msg) {
+        runOnUiThread(() -> Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show());
+    }
+
+    /** Full HIDL RX init: get service, call talkie_init and talkie_app_start via transact. */
     private void testHidlAccess() {
         new Thread(() -> {
             try {
-                // Try android.os.HwBinder.getService via reflection
                 Class<?> hwBinderClass = Class.forName("android.os.HwBinder");
                 java.lang.reflect.Method getService = hwBinderClass.getMethod(
                     "getService", String.class, String.class);
                 Object service = getService.invoke(null,
                     "vendor.hct.hardware.talkie@1.0::ITalkiePort", "default");
-                final String result = (service != null)
-                    ? "HIDL service FOUND: " + service.getClass().getName()
-                    : "HIDL service returned null";
-                runOnUiThread(() -> Toast.makeText(MainActivity.this,
-                    result, Toast.LENGTH_LONG).show());
-                android.util.Log.i("RumiTX", "HIDL test: " + result);
+                if (service == null) {
+                    showToast("HIDL service not found");
+                    return;
+                }
+
+                // Use IHwBinder.transact() for raw HIDL calls
+                // Transaction IDs: 1=init, 3=app_start (from stock vdex)
+                Class<?> ihwBinder = Class.forName("android.os.IHwBinder");
+                Class<?> hwParcelClass = Class.forName("android.os.HwParcel");
+                java.lang.reflect.Method transact = ihwBinder.getMethod(
+                    "transact", int.class, hwParcelClass, hwParcelClass, int.class);
+                java.lang.reflect.Method writeToken =
+                    hwParcelClass.getMethod("writeInterfaceToken", String.class);
+
+                String iface = "vendor.hct.hardware.talkie@1.0::ITalkiePort";
+
+                // talkie_init() - transaction 1
+                Object req1 = hwParcelClass.newInstance();
+                writeToken.invoke(req1, iface);
+                Object rep1 = hwParcelClass.newInstance();
+                transact.invoke(service, 1, req1, rep1, 0);
+                android.util.Log.i("RumiTX", "talkie_init done");
+
+                // talkie_app_start() - transaction 3
+                Object req3 = hwParcelClass.newInstance();
+                writeToken.invoke(req3, iface);
+                Object rep3 = hwParcelClass.newInstance();
+                transact.invoke(service, 3, req3, rep3, 0);
+                android.util.Log.i("RumiTX", "talkie_app_start done");
+
+                showToast("HIDL RX ready - speaker should chirp");
             } catch (Exception e) {
-                final String err = "HIDL test failed: " + e.getMessage();
-                runOnUiThread(() -> Toast.makeText(MainActivity.this,
-                    err, Toast.LENGTH_LONG).show());
+                final String err = "HIDL failed: " + e.getMessage();
+                showToast(err);
                 android.util.Log.e("RumiTX", err, e);
             }
         }).start();
