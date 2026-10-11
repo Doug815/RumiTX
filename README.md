@@ -66,6 +66,9 @@ Stay tuned.
 ![TX Active](assets/rumitx-tx-active.png)
 *Transmitting — activity telemetry shows TX bars*
 
+![Channel Editor](assets/rumitx-channel-editor.png)
+*Channel programmer — repeater mode, tones, DMR digital, color code, talkgroup*
+
 ---
 
 ## Original Technical Notes
