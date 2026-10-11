@@ -40,6 +40,8 @@ public class RadioController {
     private static final String SERIAL_PORT = "/dev/ttyMT1";
     private static final int BAUD_RATE = 57600;
     private static final String PTT_HELPER = "/data/local/tmp/rumitx-ptt";
+    /** TCP port of the helper daemon (started from adb shell). */
+    private static final int PTT_TCP_PORT = 45921;
     private static final int PTT_VAL = 0; // INTERCOM_KEY_DOWN/UP arg
 
     /** Physical PTT button keycode (stock app: "KEYCODE_F9"). */
@@ -92,7 +94,9 @@ public class RadioController {
     private volatile boolean connected = false;
     private FileInputStream serialIn;
     private FileOutputStream serialOut;
-    private Process pttProc;
+    // Note: no pttProc -- the helper is a persistent daemon started from
+    // adb shell; the app talks to it via TCP (Android blocks app exec).
+    private java.net.Socket pttSocket;
     private OutputStream pttIn;
     private BufferedReader pttOut;
     private Thread readerThread;
@@ -110,17 +114,18 @@ public class RadioController {
     public synchronized boolean connect() {
         if (connected) return true;
         try {
-            android.util.Log.i("RumiTX", "connect: launching helper");
-            // 1. Start the PTT helper and keep it running. No root
-            // needed: /dev/ttyMT1 and /dev/hctintercom_node are both
-            // 666 on the S80 (stock init.talkie.rc), SELinux permissive
-            // during testing.
-            pttProc = new ProcessBuilder(PTT_HELPER)
-                    .redirectErrorStream(true).start();
-            android.util.Log.i("RumiTX", "connect: helper launched");
-            pttIn = pttProc.getOutputStream();
+            android.util.Log.i("RumiTX", "connect: opening TCP to helper");
+            // 1. Connect to the PTT helper daemon via TCP. The helper
+            // runs as a daemon (started from adb shell, NOT spawned by
+            // the app -- Android 8+ blocks apps from exec'ing binaries).
+            java.net.Socket sock = new java.net.Socket();
+            sock.connect(new java.net.InetSocketAddress("127.0.0.1",
+                    PTT_TCP_PORT), 5000);
+            pttIn = sock.getOutputStream();
             pttOut = new BufferedReader(
-                    new InputStreamReader(pttProc.getInputStream()));
+                    new InputStreamReader(sock.getInputStream()));
+            pttSocket = sock;
+            android.util.Log.i("RumiTX", "connect: TCP open");
             String ready = pttOut.readLine();
             android.util.Log.i("RumiTX", "connect: helper said: " + ready);
             if (ready == null || !ready.startsWith("READY")) {
@@ -188,7 +193,11 @@ public class RadioController {
                 } catch (IOException ignored) { }
             }
         } catch (Exception ignored) { }
-        if (pttProc != null) pttProc.destroy(); // helper unkeys on EOF/SIGTERM
+        // Helper is a persistent daemon; just close our socket.
+        // (Do NOT kill it -- other app sessions may be using it.)
+        try { if (pttSocket != null) pttSocket.close(); }
+        catch (IOException ignored) { }
+        pttSocket = null;
         try { if (serialOut != null) serialOut.close(); }
         catch (IOException ignored) { }
         try { if (serialIn != null) serialIn.close(); }
