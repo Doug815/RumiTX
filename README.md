@@ -1,10 +1,8 @@
 # RumiTX — 2030
 
-![RumiTX logo](assets/rumitx-logo.webp)
+![RumiTX logo](assets/rumitx-logo.png)
 
 ### An open replacement for the DOOGEE S80 stock Talkie app
-
-![RumiTX Main UI](assets/rumitx-main-ui.png)
 
 ## The Problem
 
@@ -23,144 +21,123 @@ Thousands of S80 owners are stuck with software that doesn't match the hardware'
 
 RumiTX is a from-scratch rebuild of the S80's radio interface, reverse-engineered from the stock app's HIDL HAL (`ITalkiePort`), the DMR007's UART binary protocol, and the kernel's HCT intercom driver.
 
-### v2.2.1 — What's Working
+### v2.3-beta-phase2 — What's Working
 
-- ✅ **RX audio** — Full receive path through the HIDL callback (`reportResults`)
-- ✅ **TX** — Verified via RTL-SDR at 446.5556 MHz (within 100 Hz of target)
+**Core Radio:**
+- ✅ **RX audio** — Full receive path through the HIDL callback
+- ✅ **TX** — Verified via RTL-SDR (on frequency within 100 Hz)
 - ✅ **Analog + DMR** channel programming via DMR007 UART frames
-- ✅ **2030 holographic UI** — Futuristic dark interface with glowing accents
-- ✅ **Channel bank** — Tap to tune, add custom channels
 - ✅ **Hardware PTT** — Side key + on-screen hold-to-talk
-- ✅ **Squelch control** — Adjustable 1–8 via module protocol
-- ✅ **Discovery mode** — Scan for activity
-- ✅ **DMR SMS** — Send text messages over DMR (verified over the air)
-- ✅ **Repeater support** — Separate TX/RX frequencies, color codes, talkgroups
-- ✅ **Volume control** — 1–8 via DMR007 protocol (not Android AudioManager)
-- ✅ **Auto-power management** — Module power saving
+- ✅ **Auto-reconnect** — App automatically reconnects to the radio module if the link drops
 
-### The Technical Deep-Dive
+**Repeater Database (NEW in v2.3):**
+- ✅ **CSV import** — RepeaterBook and CHIRP format, your own personal-use exports
+- ✅ **316 repeaters** imported and searchable
+- ✅ **Tap to program** — Touch a repeater, module programs instantly
+- ✅ **PL/DCS tone programming** — Standard 50-tone CTCSS and 83-code DCS tables; toned repeaters program automatically
+- ✅ **Manual tone pickers** — Dropdown shows "100.0 Hz (13)" with module index
+- ✅ **Nearest/radius search** — GPS-based repeater sorting
+
+**Offline Maps (NEW in v2.3):**
+- ✅ **Mapsforge vector maps** — Full offline rendering, no internet needed
+- ✅ **Repeater pins** — Database entries shown on the map
+- ✅ **GPS location** — Your position on the offline map
+
+**DMR Identity (NEW in v2.3-phase2):**
+- ✅ **Editable callsign and DMR ID** — Set your radio's identity, displayed on main screen
+- ✅ **Persistent** — Survives app restarts
+
+**UI:**
+- ✅ **2030 holographic interface** — Futuristic dark theme with glowing accents
+- ✅ **Channel bank** — Tap to tune, add custom channels
+- ✅ **Discovery mode** — Scan for activity
+
+### Coming Soon
+- **DMR text messaging** — Pending UART probe to verify module data-frame support
+- **ATAK integration** — CoT position sharing, repeater markers, team messaging
+
+## Screenshots
+
+### Main Interface
+![Main Interface](assets/rumitx-main-v23.png)
+*The 2030 main interface — AB90V repeater tuned, DMR identity displayed*
+
+### Transmitting
+![TX Active](assets/rumitx-tx-active-v23.png)
+*Live transmission — activity telemetry shows TX bars, button glows orange*
+
+### Repeater Database
+![Repeater Database](assets/rumitx-repeater-db-v23.png)
+*316 repeaters imported, tap to program*
+
+### Repeater List
+![Repeater List](assets/rumitx-repeater-list-v23.png)
+*Searchable repeater list with DMR identity editor*
+
+### Repeater Detail
+![Repeater Detail](assets/rumitx-repeater-detail-v23.png)
+*Repeater info with tone programming and out-of-band detection*
+
+### Offline Repeater Map
+![Offline Map](assets/rumitx-repeater-map-v23.png)
+*Mapsforge vector map — 47 repeater pins across Wisconsin*
+
+### Map Download
+![Map Download](assets/rumitx-map-download-v23.png)
+*Download offline maps from GitHub releases with SHA-256 verification*
+
+### DMR Identity
+![DMR Identity](assets/rumitx-dmr-identity-v23.png)
+*Editable callsign and DMR ID*
+
+### Tone Picker
+![Tone Picker](assets/rumitx-tone-picker-v23.png)
+*Channel editor with PL/DCS tone picker*
+
+### Tone Dropdown
+![Tone Dropdown](assets/rumitx-tone-dropdown-v23.png)
+*Standard CTCSS tones with module indices — "88.5 Hz (9)"*
+
+### Discovery Scan
+![Discovery](assets/rumitx-discovery-v23.png)
+*Discovery mode — scan a band, find signals, tap to save*
+
+## Technical Details
 
 The DMR007 module is controlled through three layers:
 
 1. **HIDL HAL** (`vendor.doogee.hardware.talkie@1.0::ITalkiePort`) — `talkie_init()`, `talkie_app_start()`, `talkie_speak_enable(callback)`. The speak-enable ioctl blocks waiting for a hardware interrupt that only fires after HIDL GPIO setup — this was the key insight that unlocked RX audio.
 
-2. **UART protocol** (`/dev/ttyMT1`, 57600 8N1) — Binary frames starting with `0x68`. Channel programming uses `68 35` (analog) and `68 36` (digital) frames with the frequency encoded as 4-byte little-endian.
+2. **UART protocol** (`/dev/ttyMT1`, 57600 8N1) — Binary frames starting with `0x68`. Channel programming uses `68 35` (analog) and `68 36` (digital) frames. Tone selection uses standard index tables (CTCSS 0-50, DCS 0-82).
 
 3. **HCT kernel driver** (`/dev/hctintercom_node`) — PTT keying via ioctl, speaker/amp control.
 
-The module is **exclusive** — only one app can own it at a time. RumiTX handles clean handoff via `APP_EXIT`.
+The module is **exclusive** — only one app can own it at a time. A native helper (`rumitx-ptt`) runs as a daemon and the app connects via TCP on `127.0.0.1:45921`.
 
-## Coming Soon: Frequency Programmer
+## Installing
 
-We're building a companion tool to make it **easy to import frequencies** — no more manual entry. Think CHIRP-style CSV import, repeater database lookup, and one-tap programming to the phone.
+**Technical preview.** Requires:
+- DOOGEE S80 (Android 8.1)
+- `rumitx-ptt` helper binary at `/data/local/tmp/rumitx-ptt` (see source)
+- ADB for installation
+- SELinux permissive
+- Offline map files in `/sdcard/RumiTX/maps/` (Mapsforge .map format)
+- Repeater CSV in `/sdcard/RumiTX/import/` (RepeaterBook or CHIRP format)
 
-Stay tuned.
-
----
-
-## Screenshots
-
-![Main Interface](assets/rumitx-main-ui.png)
-*The 2030 main interface — 446.5555 MHz analog, RX standby*
-
-![TX Active](assets/rumitx-tx-active.png)
-*Transmitting — activity telemetry shows TX bars*
-
-![Channel Editor](assets/rumitx-channel-editor.png)
-*Channel programmer — repeater mode, tones, DMR digital, color code, talkgroup*
-
-![Discovery Scan](assets/rumitx-discovery.png)
-*Discovery mode — scan a band, find signals, tap to save*
-
-<video src="assets/rumitx-discovery-demo.mp4" controls width="300"></video>
-*Discovery scan in action*
-
----
-
-## Original Technical Notes
-
-An open replacement for the stock Talkie app on the **DOOGEE S80** rugged phone —
-unlocking the real DMR digital radio hardware inside it.
-
-The S80 ships with a genuine DMR transceiver module (DMR007) on its serial port,
-but the stock app is the only key to it, and it's... not great. RumiTX talks to
-the module directly using its native binary protocol: program channels with
-separate TX/RX frequencies, DMR color codes and talkgroups, key the transmitter
-from an on-screen or physical PTT button, and send DMR text messages.
-
-> **Status: v2.2.1 — TX/RX verified on hardware.** The protocol is decoded and RF-verified
-> (transmissions captured on SDR at 446.5556 MHz), HIDL RX audio path working,
-> 2030 UI live. See release notes for details.
-
-## Community
-
-Found this useful? Having issues? Want to contribute?
-
-- **Issues:** [GitHub Issues](../../issues) — bug reports, feature requests
-- **Discussions:** Share your channel configs, report device compatibility
-
-If you've been searching for years for a Talkie replacement — you found it. Welcome aboard.
-
----
-
-*Built with patience, reverse engineering, and an RTL-SDR. Stay tuned for more.*
-
-## What works so far (detailed)
-
-- Full DMR007 binary protocol decoded from the stock app: channel programming
-  (`68 36` digital / `68 35` analog), TX start/stop (`68 06`), DMR SMS
-  (`68 07`), volume, auto-power, and query frames — checksums verified
-- Module UART confirmed at **57600 baud 8N1** (not 9600)
-- RF verified with an RTL-SDR: programmed 446.5555 MHz, keyed ~9 s, clean
-  +20 dB narrowband DMR 4FSK carrier, on frequency
-- DMR SMS send verified over the air (burst length scales with message length)
-- `Dmr007Frame.java` — exact Java port of the frame builders, self-tested
-  against stock-verified vectors
-- `RadioController.java` — binary-protocol radio controller (replaces the old
-  AT-command layer)
-- Physical PTT side-button mapping decoded (KEYCODE_F9)
-
-See [DMR007-PROTOCOL.txt](DMR007-PROTOCOL.txt) for the full protocol
-documentation and [rumitx-spec.txt](rumitx-spec.txt) for the hardware/software
-spec.
-
-## Layout
-
-- `app/` — Android app source (package `com.rumitx.app`)
-- `tools/dmr007_frame.py` — Python reference implementation of every frame
-  builder, with self-tests (start here to understand the protocol)
-- `tools/analyze_cap.py`, `tools/goertzel.py` — SDR capture analysis helpers
-- `native/ptt_client.cpp` — native PTT/ioctl helper source
-- `docs/` — protocol documentation
-- `build-apk.sh` — manual APK build script (no Gradle daemon needed)
+See the [releases page](../../releases) for APK downloads.
 
 ## Building
 
-Prerequisites: Android SDK build-tools 28.0.3 and `android-28/android.jar`,
-plus a JDK. Set `RUMITX_SDK` to your SDK path (defaults to
-`$REPO/../rumitx/android-sdk`):
+See source ZIP attached to each release for exact buildable source.
 
-```sh
-RUMITX_SDK=/path/to/android-sdk ./build-apk.sh
-```
+## Legal / Safety
 
-This produces a signed debug APK. A release signing key is **not** in this repo
-— generate your own before publishing.
-
-## Installing / testing
-
-RumiTX targets the DOOGEE S80 (Android 8.1) with root. The radio module lives
-on `/dev/ttyMT1` and PTT goes through `/dev/hctintercom_node` ioctls, so the
-app needs root/su access on current builds. Graceful device checks and a
-no-root-required install path are on the roadmap before public release.
-
-## Legal / safety
-
-**Only transmit where you are licensed or authorized to do so.** The S80's
-400–480 MHz range covers amateur and commercial allocations that require a
-license in most countries. Test with an SDR receiver before transmitting, and
-never key the transmitter blindly.
+**Only transmit where you are licensed or authorized to do so.** The S80's 400–480 MHz range covers amateur and commercial allocations that require a license in most countries. Test with an SDR receiver before transmitting, and never key the transmitter blindly.
 
 ## License
 
 To be chosen before public release.
+
+---
+
+*Built with patience, reverse engineering, and an RTL-SDR.*
