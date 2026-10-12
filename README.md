@@ -1,3 +1,4 @@
+
 # RumiTX — 2030
 
 ![RumiTX logo](assets/rumitx-logo.png)
@@ -61,6 +62,15 @@ RumiTX is a from-scratch rebuild of the S80's radio interface, reverse-engineere
 - **ATAK integration** — CoT position sharing, repeater markers, team messaging
 
 
+## Support
+
+If RumiTX is useful to you, consider supporting the project:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/doug815)
+
+One-time tips and monthly support both help keep development going.
+
 ## License
+
 
 MIT — see [LICENSE](LICENSE) for details.
