@@ -59,3 +59,8 @@ RumiTX is a from-scratch rebuild of the S80's radio interface, reverse-engineere
 ### Coming Soon
 - **DMR text messaging** — Pending UART probe to verify module data-frame support
 - **ATAK integration** — CoT position sharing, repeater markers, team messaging
+
+
+## License
+
+MIT — see [LICENSE](LICENSE) for details.
