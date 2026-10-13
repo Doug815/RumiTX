@@ -67,19 +67,23 @@ public final class VoiceTxBridge {
                     reply(false, "BUSY or stopping", "", "");
                     return;
                 }
-                final Request request;
+                // Broadcasts run on the UI thread. Parsing the allowlist,
+                // HMAC/replay ledger and fsync must not block that thread.
+                final Intent requestIntent = new Intent(intent);
                 try {
-                    request = authorize(intent);
-                } catch (Exception error) {
-                    BUSY.set(false);
-                    reply(false, "REJECTED: " + error.getMessage(), "", "");
-                    return;
-                }
-                try {
-                    worker.execute(() -> transmit(request));
+                    worker.execute(() -> {
+                        try {
+                            Request request = authorize(requestIntent);
+                            transmit(request);
+                        } catch (Exception error) {
+                            Log.e(TAG, "TX_AUDIO rejected before keying", error);
+                            BUSY.set(false);
+                            reply(false, "REJECTED: " + error.getMessage(), "", "");
+                        }
+                    });
                 } catch (RejectedExecutionException rejected) {
                     BUSY.set(false);
-                    reply(false, "Service stopping", request.tx, request.sha);
+                    reply(false, "Service stopping", "", "");
                 }
             }
         };
