@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One-shot analog FM PTT-only experiment with stock HIDL RX route temporarily OFF.
 # WARNING: receiver monitoring may be interrupted for the four-second TX test.
-# Uses exactly the existing StockAudioRoute stop() vendor parameters.
+# Uses ONLY the verified HAL loopback-off setting SET_LOOPBACK_TYPE=0;
+# leaves mic selection/gain untouched and restores loopback=3,3 afterward.
 # Arm does NOT transmit; only next separately authorized, signed TX_AUDIO
 # using 4.0 s zero PCM can key the analog module.
 set -euo pipefail
@@ -29,8 +30,8 @@ else
   # Validate package version before enabling this mode; old builds won't
   # implement automatic RX restoration or fail-closed RX-route diagnostics.
   VERSION="$(adb shell dumpsys package com.rumitx.app | grep -m1 'versionCode=' || true)"
-  if [[ ! "$VERSION" =~ versionCode=20301036 ]]; then
-    echo "Refusing to arm: requires installed RumiTX versionCode 20301036." >&2
+  if [[ ! "$VERSION" =~ versionCode=20301037 ]]; then
+    echo "Refusing to arm: requires installed RumiTX versionCode 20301037." >&2
     echo "Detected: $VERSION" >&2
     exit 3
   fi
@@ -42,7 +43,7 @@ chown '$APPUID:$APPUID' '$BASE/analog_tx_diagnostic_mode.txt' '$BASE/analog_rx_r
 chmod 600 '$BASE/analog_tx_diagnostic_mode.txt' '$BASE/analog_rx_route_probe.txt'; \
 restorecon '$BASE/analog_tx_diagnostic_mode.txt' '$BASE/analog_rx_route_probe.txt' 2>/dev/null || true"
   echo "One-shot RX route probe ARMED. Next signed, allowlisted analog TX_AUDIO"
-  echo "with exactly 4s all-zero WAV temporarily applies stock RX stop values."
+  echo "with exactly 4s all-zero WAV temporarily applies SET_LOOPBACK_TYPE=0 ONLY."
   echo "No MediaPlayer. No volume mutation. 1s post-PTT settle + 4s key hold."
   echo "The probe is disarmed before radio keying and restores the RX route"
   echo "after PTT UP. Verify received audio and HIDL RX after the test."
