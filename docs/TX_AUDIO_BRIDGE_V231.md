@@ -78,7 +78,12 @@ header at 16kHz, mono 16-bit, max 15 seconds, SHA, TX cooldown and
 single-session radio lock. PTT-up always attempted in final cleanup.
 Afterward it attempts to restore the previously selected operator channel.
 A hardware/helper watchdog remains mandatory; process crash or a blocking
-kernel call cannot be guaranteed safe by app code alone.
+kernel call cannot be guaranteed safe by app code alone. The existing helper
+source defaults to a 120-second TX timeout and supports the startup variable
+RUMITX_TX_TIMEOUT. For authorized supervised voice testing, configure a
+shorter independent watchdog (for example 30 seconds), confirm that the
+running helper actually uses that limit, and verify watchdog PTT release.
+Do not restart or replace the active helper during a transmission.
 
 ## Sender and tests
 
