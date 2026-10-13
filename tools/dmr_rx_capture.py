@@ -126,7 +126,15 @@ def parser_for_tests() -> argparse.ArgumentParser:
     p.add_argument("--duration", type=int, default=40,
                    help="maximum receive duration, 8-180 seconds (default 40)")
     p.add_argument("--gain", type=int, default=8,
-                   help="RTL tuner gain 0-49 (start LOW to avoid TX overload)")
+                   help="RTL tuner gain 0-49 (0 = hardware AGC; start low to avoid overload)")
+    p.add_argument("--rtl-bw-khz", type=int, default=12, choices=RTL_BW_CHOICES,
+                   help="RTL demodulator bandwidth (default 12 kHz)")
+    p.add_argument("--rtl-volume", type=int, default=2, choices=(1, 2, 3),
+                   help="RTL post-FM sample gain (default 2; test 1 for clipping)")
+    p.add_argument("--decoder-mode", choices=("dmr", "auto"), default="dmr",
+                   help="DMR-only -fs (default), or auto-detect -fa")
+    p.add_argument("--invert-dmr", action="store_true",
+                   help="probe inverted DMR demodulation (-xr) if normal mode cannot sync")
     p.add_argument("--ppm", type=int, default=0, help="RTL tuner PPM calibration")
     p.add_argument("--device", type=int, default=0, help="RTL SDR device index")
     p.add_argument("--decoder", default="dsd-fme", help="DSD-FME executable")
@@ -188,9 +196,14 @@ def execute(args: argparse.Namespace) -> int:
         directory = args.output or (Path("dmr_voice_tests") / stamp)
         if directory.exists() and any(directory.iterdir()):
             raise ValueError("output directory must be new or empty")
+        plan = rtl_dsp_tuning_plan(freq, args.rtl_bw_khz)
         command = build_decoder_command(args.decoder, freq, args.gain,
                                         args.ppm, args.device, directory,
-                                        save_demod=args.save_demod)
+                                        save_demod=args.save_demod,
+                                        rtl_bw_khz=args.rtl_bw_khz,
+                                        decoder_mode=args.decoder_mode,
+                                        invert_dmr=args.invert_dmr,
+                                        rtl_volume=args.rtl_volume)
     except (OSError, ValueError) as error:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2
@@ -198,6 +211,9 @@ def execute(args: argparse.Namespace) -> int:
     planned = {
         "mode": "live_send_and_receive" if args.send else "receive_only",
         "frequency_mhz": freq, "capture_seconds": args.duration,
+        "rf_and_tuner_frequencies": plan,
+        "decoder_mode": args.decoder_mode,
+        "dmr_polarity_forced_inverted": args.invert_dmr,
         "decoder_command": command,
         "sender_command": (["[signed TX_AUDIO request via ADB; key redacted]"]
                            if sender else None),
@@ -213,6 +229,11 @@ def execute(args: argparse.Namespace) -> int:
         print("DSD-FME executable not found. Follow docs/DMR_RECEIVE_VOICE_VERIFICATION.md",
               file=sys.stderr)
         return 2
+    print(
+        f"Requested RF target: {freq} MHz; expected RTL tuner center: "
+        f"{plan['expected_rtl_center_hz']/1000000:.6f} MHz "
+        f"(internal +{plan['internal_center_offset_hz']} Hz offset; DSP shifts back).",
+        flush=True)
     directory.mkdir(parents=True, exist_ok=True)
     (directory/"decoded_wavs").mkdir(exist_ok=True)
     started = datetime.now(timezone.utc).isoformat()
@@ -261,7 +282,14 @@ def execute(args: argparse.Namespace) -> int:
 
     audio_paths = sorted((directory/"decoded_wavs").rglob("*.wav"))
     report = examine(audio_paths, args.reference or (args.wav if args.send else None))
+    try:
+        sync = dmr_sync_summary(log_file.read_text(encoding="utf-8", errors="replace"))
+    except OSError as error:
+        sync = {"dmr_sync_observed": False, "dmr_sync_count": 0,
+                "log_error": str(error)}
     report.update({
+        "dmr_frame_sync": sync,
+        "rf_and_tuner_frequencies": plan,
         "frequency_mhz": freq,
         "rx_decoder": "DSD-FME",
         "decoder_exit_code": decoder_rc,
@@ -275,10 +303,11 @@ def execute(args: argparse.Namespace) -> int:
     (directory/"report.json").write_text(json.dumps(report, indent=2)+"\n")
     print(json.dumps({"report": str(directory/"report.json"),
                       "assessment": report["assessment"],
+                      "dmr_sync_observed": sync.get("dmr_sync_observed", False),
                       "saved_decoded_wavs": len(audio_paths),
                       "send_result": send_result}, indent=2))
     if report["assessment"] == "no_valid_decoded_wave":
-        print("No decoded audio. Review tuning/RTL gain/DMR sync and receiver log.", file=sys.stderr)
+        print("No decoded audio. --freq is the desired RF channel: do NOT subtract DSD-FME's internal +252k center offset. Check DMR sync, clipping and inverted polarity.", file=sys.stderr)
         return 3
     return 0
 
