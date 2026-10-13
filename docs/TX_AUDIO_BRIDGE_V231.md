@@ -98,10 +98,71 @@ python3 tools/tx_audio_client.py --wav output.wav --tx YOUR_ALLOWED_MHZ --adb
 
 The dynamic receiver exists only when RadioService is running; start
 RumiTX once after boot, then no touchscreen actions are needed for requests.
-Acoustic speaker-to-microphone coupling is experimental. MediaPlayer
-completion is NOT proof of DMR audio on the air. SET_LOOPBACK_TYPE is NOT
-enabled or validated in this revision. Use RTL-SDR V4 demodulation and
-a listening receiver for actual end-to-end testing.
+Acoustic speaker-to-microphone coupling is the working baseline reported
+by the operator. MediaPlayer completion is NOT proof of intelligible DMR
+audio on the air. SET_LOOPBACK_TYPE is NOT modified or validated here.
+Use an authorized DMR listening receiver and record **decoded audio**
+in addition to RTL-SDR RF observations.
+
+## Operator-confirmed transmit timing (2026-10-12)
+
+**PTT DOWN -> wait 1,000 ms -> WAV playback -> PTT UP immediately.**
+The one-second pause belongs strictly BEFORE WAV playback, after the TX
+microphone/radio has keyed. It is NOT a post-WAV tail. The pause must be
+cancellable, and PTT must be released without additional delay on failure,
+shutdown, loss of helper, or playback error. The controller exposes
+`isKeyed()`; the bridge checks it during the pre-playback wait.
+
+## Audio routing research: controlled experiment (not a digital-injection claim)
+
+Report source: ASTRA_AUDIO_INJECTION_FINDINGS.txt (investigator: Rumi).
+StockAudioRoute.java sets `SET_MIC_NUM=1` on prepare, then on positive
+HIDL RX state sets `SET_MIC_NUM=2`, `RESET_MIC2_COUNTER=0`, and
+`SET_LOOPBACK_TYPE=3, 3`; stop restores the stock settings.
+The MediaTek HAL binary contains loopback-related strings/symbols, but
+these DO NOT establish a valid playback-to-DMR-TX route or what numeric
+loopback values mean. Zero ALSA PCM substreams were observed in RUNNING
+state in an active TX test, which is evidence for a hardware/DSP bypass
+but does not categorically rule out AP audio injection.
+
+A voluntary **Android output-stream probe** is now available without
+modifying HAL mixer state or adding new DMR007/serial/helper clients.
+Only provisioned root/app-private access can set the routing profile:
+
+- Default: no `voice_bridge/audio_route_profile.txt`, or `acoustic`:
+  MediaPlayer STREAM_MUSIC and existing speaker->mic baseline.
+- `voice_call_probe`: MediaPlayer STREAM_VOICE_CALL, NO MODE_IN_CALL and
+  NO vendor `setParameters()` modifications. This MAY route to an
+  earpiece or other output; **it is not presumed to be digital injection**.
+  The bridge logs `AUDIO_ROUTE profile=...`.
+
+Set/revert profiles from a trusted ADB shell, retaining app-private ownership:
+```bash
+# Only AFTER developer/operator verification of SELinux and local files:
+adb shell su -c 'printf "%s\\n" voice_call_probe > /data/user/0/com.rumitx.app/files/voice_bridge/audio_route_profile.txt'
+# Revert to the baseline after testing:
+adb shell su -c 'printf "%s\\n" acoustic > /data/user/0/com.rumitx.app/files/voice_bridge/audio_route_profile.txt'
+```
+If the test phone cannot read these files due to ownership/SELinux context,
+have the app owner write them or restore the original label; do not
+disable SELinux globally.
+
+**Minimum evidence:** (A) a clean WAV with known speech and a call sign,
+(B) exact PTT/WAV timestamps, (C) decoded DMR voice recording from a
+separate authorized receiver, (D) note whether the phone speaker or
+earpiece audibly emitted the clip, (E) post-test HIDL RX and channel
+recovery. Compare identical audio and radio conditions across both
+profiles. A speaker/earpiece still sounding while the DMR receiver hears
+audio cannot distinguish acoustic pickup from genuine digital routing.
+Use a properly controlled isolation experiment before making that claim.
+
+`tools/audio_injection_survey.sh` performs read-only ADB snapshots of
+AudioFlinger/AudioPolicy, ALSA status, and optional tinymix information.
+It does not key the radio or modify mixer controls. Capture before and
+during a supervised, legally authorized TX session; compare diffs.
+**Do not blindly scan undocumented SET_LOOPBACK_TYPE values in production.**
+A separate reversible HAL lab build should only follow a verified
+parameter mapping and independent PTT watchdog validation.
 
 ## Release gates
 
