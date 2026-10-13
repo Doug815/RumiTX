@@ -36,6 +36,18 @@ class RxVoiceTests(unittest.TestCase):
         self.assertIn("decoded_wavs", cmd[cmd.index("-7")+1])
         self.assertIn("-J", cmd)
 
+    def test_optional_discriminator_wav_is_not_decoded_voice(self):
+        cmd = build_decoder_command("dsd-fme", "446.00625", 8, 0, 0,
+                                    Path("/tmp/probe"), save_demod=True)
+        self.assertIn("-6", cmd)
+        self.assertTrue(cmd[cmd.index("-6")+1].endswith("dmr_discriminator_48k.wav"))
+        self.assertLess(cmd.index("-6"), cmd.index("-7"))
+        self.assertLess(cmd.index("-7"), cmd.index("-P"))
+        # Default must stay light on disk.
+        normal = build_decoder_command("dsd-fme", "446.00625", 8, 0, 0,
+                                       Path("/tmp/probe"))
+        self.assertNotIn("-6", normal)
+
     def test_rejects_invalid_sdr_calibration(self):
         for freq, gain, ppm, device in [
             ("399.99999", 8, 0, 0),
