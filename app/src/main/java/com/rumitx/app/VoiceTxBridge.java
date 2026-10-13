@@ -273,6 +273,25 @@ public final class VoiceTxBridge {
         throw new IOException("invalid audio_route_profile.txt; use acoustic or voice_call_probe");
     }
 
+    /**
+     * Analog-only attenuation for speaker-to-mic acoustic coupling.
+     * Stock baseline forced STREAM_MUSIC to 100%, which can overload the
+     * narrowband FM TX mic path. Default to 40% for FM; DMR stays unchanged.
+     * Operator can choose 0..100 via app-private analog_tx_volume_percent.txt,
+     * with 0 used ONLY for supervised silence/mic-path isolation tests.
+     *
+     * Deliberately avoid undocumented vendor setParameters()/loopback changes:
+     * the existing HIDL RX routing must not be disturbed.
+     */
+    private int analogPlaybackPercent() throws IOException {
+        File setting = new File(root, "analog_tx_volume_percent.txt");
+        if (!setting.isFile()) return 40;
+        String value = firstLine(setting);
+        if (value == null || !value.matches("(100|[0-9]{1,2})"))
+            throw new IOException("analog_tx_volume_percent.txt must be 0..100");
+        return Integer.parseInt(value);
+    }
+
     private void awaitMicReady() throws IOException, InterruptedException {
         final long target = SystemClock.elapsedRealtime() + PRE_PLAYBACK_SETTLE_MS;
         while (SystemClock.elapsedRealtime() < target) {
@@ -295,6 +314,7 @@ public final class VoiceTxBridge {
         int oldVolume = -1;
         int streamType = AudioManager.STREAM_MUSIC;
         String outputProfile = "acoustic";
+        int analogPercent = -1;
         CountDownLatch done = new CountDownLatch(1);
         AtomicBoolean audioError = new AtomicBoolean();
         completion = done;
@@ -307,6 +327,10 @@ public final class VoiceTxBridge {
                 throw new IOException("radio unavailable or manually keyed");
             int millis = validateWav(r);
             outputProfile = routeProfile();
+            // Resolve invalid settings BEFORE channel programming and PTT.
+            // Never apply attenuation to the proven DMR audio path.
+            if ("0".equals(r.digital))
+                analogPercent = analogPlaybackPercent();
             streamType = "voice_call_probe".equals(outputProfile)
                     ? AudioManager.STREAM_VOICE_CALL : AudioManager.STREAM_MUSIC;
             Log.i(TAG, "AUDIO_ROUTE profile=" + outputProfile +
@@ -350,11 +374,24 @@ public final class VoiceTxBridge {
             player.prepare();
             if (manager != null) {
                 oldVolume = manager.getStreamVolume(streamType);
-                // Keep the same baseline gain for the acoustic setup.
-                // VOICE_CALL is a controlled playback-output probe only.
-                if ("acoustic".equals(outputProfile))
+                if ("0".equals(r.digital)) {
+                    // FM route was being driven at max volume; reduce amplifier
+                    // level while preserving the TTS samples/MediaPlayer gain.
+                    int max = manager.getStreamMaxVolume(streamType);
+                    int target = Math.max(0, Math.min(max,
+                            Math.round(max * analogPercent / 100.0f)));
+                    manager.setStreamVolume(streamType, target, 0);
+                    Log.i(TAG, "ANALOG_FM_GAIN percent=" + analogPercent +
+                            " stream=" + streamType + " volume=" + target +
+                            "/" + max + " (restore=" + oldVolume + ")");
+                } else if ("acoustic".equals(outputProfile)) {
+                    // Existing field-tested DMR baseline: unchanged.
                     manager.setStreamVolume(streamType,
                             manager.getStreamMaxVolume(streamType), 0);
+                }
+            } else if ("0".equals(r.digital)) {
+                // Cannot apply gain reduction without an AudioManager.
+                throw new IOException("AudioManager unavailable for analog gain control");
             }
             pttAttempted = true;
             if (!radio.pttDown()) throw new IOException("PTT DOWN not acknowledged");
@@ -367,6 +404,7 @@ public final class VoiceTxBridge {
             if (audioError.get()) throw new IOException("audio playback failure");
             if (closing.get()) throw new IOException("cancelled during TX");
             note = "mode=" + (r.digital.equals("1") ? "DMR" : "ANALOG_FM") +
+                    "; gain_pct=" + (analogPercent < 0 ? "baseline" : analogPercent) +
                     "; route=" + outputProfile +
                     "; local playback complete; received RF audio NOT verified";
             success = true;
