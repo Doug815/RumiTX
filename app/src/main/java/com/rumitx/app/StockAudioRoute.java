@@ -68,7 +68,7 @@ public final class StockAudioRoute {
         RadioLog.i("RumiTX-Audio",
                 "Driver result=" + value + "; stock receive-open value=1");
         if (temporarilySuspended) {
-            RadioLog.w("RumiTX-Audio",
+            RadioLog.i("RumiTX-Audio",
                     "RX route callback deferred during analog-only probe; value=" + value);
             return;
         }
@@ -83,7 +83,7 @@ public final class StockAudioRoute {
      */
     public synchronized boolean suspendForAnalogTxProbe() {
         if (audio == null || temporarilySuspended || !lastRxCallbackOpen) {
-            RadioLog.w("RumiTX-Audio",
+            RadioLog.i("RumiTX-Audio",
                     "ANALOG_RX_ROUTE_PROBE_REJECTED: no open RX callback / already suspended");
             return false;
         }
@@ -96,7 +96,7 @@ public final class StockAudioRoute {
                     "ANALOG_RX_ROUTE_PROBE_ABORT: stock stop parameters failed");
             return false;
         }
-        RadioLog.w("RumiTX-Audio",
+        RadioLog.i("RumiTX-Audio",
                 "ANALOG_RX_ROUTE_PROBE_SUSPENDED: stock stop route applied; " +
                 "vendor HAL acknowledgment NOT independently verified");
         return true;
@@ -108,7 +108,7 @@ public final class StockAudioRoute {
         temporarilySuspended = false;
         boolean ok = lastRxCallbackOpen ? setStockRxRoute()
                                         : setStockStoppedRoute();
-        RadioLog.w("RumiTX-Audio",
+        RadioLog.i("RumiTX-Audio",
                 "ANALOG_RX_ROUTE_PROBE_RESTORE: lastRxOpen=" +
                 lastRxCallbackOpen + " invoked=" + ok +
                 " (receiver audio must be checked on device)");
