@@ -156,8 +156,10 @@ public final class VoiceTxBridge {
         r.tx = required(i, "tx");
         r.rx = optional(i, "rx", r.tx);
         r.digital = optional(i, "digital", "1");
-        r.cc = optional(i, "cc", "1");
-        r.tg = optional(i, "tg", "99");
+        // Unspecified DMR metadata defaults to 0/0 for analog FM.
+        // The values remain part of the existing HMAC V1 signed payload.
+        r.cc = optional(i, "cc", "0".equals(r.digital) ? "0" : "1");
+        r.tg = optional(i, "tg", "0".equals(r.digital) ? "0" : "99");
         r.issued = required(i, "issued");
         r.nonce = required(i, "nonce").toLowerCase(Locale.US);
         r.sha = required(i, "sha256").toLowerCase(Locale.US);
