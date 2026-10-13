@@ -107,7 +107,9 @@ a listening receiver for actual end-to-end testing.
 
 1. Verify this branch is derived from v2.3.1-source, never old main.
 2. Confirm package ID and versionCode greater than installed v2.3.1.
-3. Compile with Android SDK API 33 (target SDK 27), Gradle 7.5 and JDK 17.
+3. Install Android SDK API 33 (target SDK stays 27); run
+   bash tools/build_hidl_compile_stubs.sh before Gradle 7.5 with JDK 17.
+   The jar is compileOnly and must NEVER be bundled; device firmware owns HIDL.
 4. Sign privately using the original release certificate (NOT debug key).
 5. Compare signing cert SHA-256 against the installed phone APK.
 6. Reject bad MAC, replay, old timestamp, bad audio hash, unauthorized
