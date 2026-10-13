@@ -247,7 +247,19 @@ verification tool for Doug's Omarchy ThinkPad and RTL-SDR Blog V4:
 
 When a separate operator-authorized transmission occurs, it saves
 per-call decoded DMR speech WAVs in the session directory, DMR
-event/decoder logs, and a JSON report. For an independently captured
+event/decoder logs, and a JSON report.
+
+For a difficult-to-decode test, add --save-demod to retain 48 kHz FM
+discriminator audio in dmr_discriminator_48k.wav (NOT decoded voice,
+and NOT raw I/Q). This recording supports independent offline replays
+without transmitting again. DSD-FME documents -6 to capture raw 48 kHz
+demodulated audio and accepts 48 kHz mono WAV as -i input. The feature
+is OFF by default to conserve disk space:
+
+    python3 tools/dmr_rx_capture.py --freq 446.00625 --duration 40 --save-demod
+
+Replay the saved 48 kHz discriminator WAV into DSD-FME offline using its
+-fs and -i WAV options, then compare the newly decoded voice file. For an independently captured
 decoded WAV (e.g. from SDRTrunk), compare timing with the original TTS:
 
     python3 tools/analyze_dmr_voice.py RECEIVED_WAV_DIRECTORY --reference prepared.wav
