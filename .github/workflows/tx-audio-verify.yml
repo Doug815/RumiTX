@@ -1,0 +1,37 @@
+name: RumiTX v2.3.1 TX_AUDIO build check
+on:
+  push:
+    branches: [feature/tx-audio-v231]
+  pull_request:
+    branches: [v2.3.1-source]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  debug-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout v2.3.1-derived source
+        uses: actions/checkout@v4
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Android SDK command line tools
+        uses: android-actions/setup-android@v3
+      - name: Install Android API 28
+        run: sdkmanager "platforms;android-28" "build-tools;33.0.2"
+      - name: Gradle 7.5
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "7.5"
+      - name: Assemble unsigned-for-update debug test APK
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+      - name: Upload build artifact (NOT release-key signed)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rumitx-v231-tx-audio-debug-NOT-INSTALLABLE-OVER-RELEASE
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
