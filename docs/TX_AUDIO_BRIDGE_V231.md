@@ -87,8 +87,26 @@ Do not restart or replace the active helper during a transmission.
 
 ## Sender and tests
 
-Produce canonical WAV:
-ffmpeg -i input.wav -ac 1 -ar 16000 -sample_fmt s16 output.wav
+Prepare a canonical, speech-conditioned TX WAV on the ThinkPad:
+python3 tools/prepare_tx_speech.py input.wav output.wav
+
+This produces a strict RIFF 44-byte header with 16 kHz mono PCM16,
+high-pass/low-pass speech filtering, a compressor, and a peak limiter.
+Unlike an ordinary ffmpeg WAV export, it avoids an extra LIST metadata
+chunk that the strict v1 TX_AUDIO WAV parser would reject. The tool
+rejects input audio over 15 seconds rather than silently truncating it.
+
+Select the DEFAULT acoustic baseline explicitly:
+bash tools/set_audio_route_profile.sh acoustic
+
+Only for a supervised A/B audio-routing experiment:
+bash tools/set_audio_route_profile.sh voice_call_probe
+# After test, restore:
+bash tools/set_audio_route_profile.sh acoustic
+
+For read-only audio-path snapshots, before and during an authorized test:
+bash tools/audio_injection_survey.sh idle
+bash tools/audio_injection_survey.sh during_tx
 
 Dry run (does NOT transmit):
 python3 tools/tx_audio_client.py --wav output.wav --tx YOUR_ALLOWED_MHZ
