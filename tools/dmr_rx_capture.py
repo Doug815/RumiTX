@@ -24,6 +24,49 @@ from tx_audio_client import validate_mhz, sha_wav
 REPO_TOOLS = Path(__file__).resolve().parent
 # -7 MUST precede -P in DSD-FME, per upstream usage documentation.
 DSD_REFERENCE = "https://github.com/lwvmobile/dsd-fme/blob/audio_work/examples/cygwin_bat/complete_usage_options.txt"
+RTL_SOURCE = "https://github.com/lwvmobile/dsd-fme/blob/audio_work/src/rtl_sdr_fm.cpp"
+RTL_BW_CHOICES = (4, 6, 8, 12, 16, 24)
+
+
+def rtl_dsp_tuning_plan(freq_mhz: str, bw_khz: int = 12) -> dict:
+    """Mirror upstream DSD-FME rtl_sdr_fm.cpp optimal_settings().
+
+    A DSD-FME +252 kHz tuner-center offset is deliberate IQ-DC avoidance,
+    NOT a correction to be subtracted from the requested RF channel.
+    Internally the RTL callback rotates the IQ samples before demodulation.
+    """
+    desired = validate_mhz(freq_mhz)
+    if bw_khz not in RTL_BW_CHOICES:
+        raise ValueError("RTL bandwidth must be 4, 6, 8, 12, 16, or 24 kHz")
+    channel_hz = round(float(desired) * 1000000)
+    rate_in = bw_khz * 1000
+    downsample = (1000000 // rate_in) + 1
+    capture_rate = downsample * rate_in
+    offset_hz = capture_rate // 4
+    return {
+        "rf_channel_mhz": desired,
+        "dsp_target_hz": channel_hz,
+        "expected_rtl_center_hz": channel_hz + offset_hz,
+        "internal_center_offset_hz": offset_hz,
+        "capture_sample_rate_hz": capture_rate,
+        "rtl_bandwidth_khz": bw_khz,
+        "explanation": "Do NOT subtract the RTL offset from --freq; DSD-FME already shifts the RF channel back digitally.",
+        "source": RTL_SOURCE,
+    }
+
+
+def dmr_sync_summary(log_text: str) -> dict:
+    """Require explicit decoder frame-sync evidence, not just a TEMP WAV."""
+    lines = log_text.splitlines()
+    matches = [line.strip()[:300] for line in lines
+               if re.search(r"Sync:\s*[+-]DMR\b", line, re.IGNORECASE)]
+    return {
+        "dmr_sync_count": len(matches),
+        "dmr_sync_observed": bool(matches),
+        "dmr_sync_examples": matches[:8],
+        "meaning": ("DSD-FME logged DMR frame synchronization" if matches
+                    else "No explicit DMR frame-sync lines found; RF activity or a 44-byte TEMP WAV is not sync"),
+    }
 
 
 def build_decoder_command(program: str, freq: str, gain: int, ppm: int,
