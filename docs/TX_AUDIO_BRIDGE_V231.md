@@ -161,6 +161,33 @@ AudioFlinger/AudioPolicy, ALSA status, and optional tinymix information.
 It does not key the radio or modify mixer controls. Capture before and
 during a supervised, legally authorized TX session; compare diffs.
 **Do not blindly scan undocumented SET_LOOPBACK_TYPE values in production.**
+
+
+### MediaTek HAL source cross-check (upstream analogue, NOT the S80 binary)
+
+Public MediaTek V3 audio sources contain a `LoopbackManager.h` enum mapping
+`3 = AP_REF_MIC_AFE_LOOPBACK` (reference mic input) and
+`3 = LOOPBACK_OUTPUT_SPEAKER` (output destination). On that implementation
+`SET_LOOPBACK_TYPE=3,3` means **reference microphone -> speaker** and is a
+factory mic-loopback route, **not Android PCM playback -> DMR uplink**.
+The source also explicitly distinguishes modem-acoustic-mic loopback
+types 21-26; those too are input-microphone test routes, not evidence
+of a MediaPlayer-to-DMR vocoder insertion point.
+
+Sources:
+- https://github.com/nofearnohappy/vendor_AOSP/blob/4e7966126c5475a20df2733bcadf358694711550/mediatek/proprietary/hardware/audio/common/V3/include/LoopbackManager.h
+- https://github.com/nofearnohappy/vendor_AOSP/blob/4e7966126c5475a20df2733bcadf358694711550/mediatek/proprietary/hardware/audio/common/V3/aud_drv/LoopbackManager.cpp
+- https://github.com/LineageOS/android_device_xiaomi_mt6785-common/blob/f93a39c4f4a51982be591e326324d70b2dc847ab/rootdir/bin/setup_mainmic2headphone.sh
+
+**Caveat:** These are related MediaTek platforms, not the S80's
+`audio.primary.mt6763.so` binary. Verify its actual enum/parser and
+codec route before extrapolating. Given this discovery, changing
+`SET_LOOPBACK_TYPE` is **deprioritized**. The defensible research task
+is mapping the S80's hardware **TX ADC/mic input** and testing whether
+the AP playback mixer has a real insertion path before that input.
+Ordinary telephony-uplink and BGS examples for cellular modems do not
+automatically apply to an external DMR vocoder.
+
 A separate reversible HAL lab build should only follow a verified
 parameter mapping and independent PTT watchdog validation.
 
