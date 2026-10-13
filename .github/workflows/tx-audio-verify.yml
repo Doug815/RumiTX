@@ -39,10 +39,55 @@ jobs:
           gradle-version: "7.5"
       - name: Assemble test APK (cannot update release-signed app)
         run: gradle --no-daemon --stacktrace :app:assembleDebug
-      - name: Upload build artifact (NOT release-key signed)
+      - name: Stage APK and verified SHA-256 checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(app/build/outputs/apk/debug/*.apk)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one debug APK, got ${#apks[@]}"
+            exit 1
+          fi
+          mkdir -p ci-artifacts
+          artifact_apk="RumiTX-v231-TX_AUDIO-${GITHUB_SHA:0:12}-DEBUG-ONLY.apk"
+          cp -- "${apks[0]}" "ci-artifacts/${artifact_apk}"
+          (
+            cd ci-artifacts
+            sha256sum "${artifact_apk}" > SHA256SUMS.txt
+            sha256sum --check SHA256SUMS.txt
+            {
+              printf 'source_repo=%s\n' "${GITHUB_REPOSITORY}"
+              printf 'source_commit=%s\n' "$(git rev-parse HEAD)"
+              printf 'source_ref=%s\n' "${GITHUB_REF}"
+              printf 'ci_run=%s\n' "${GITHUB_RUN_ID}"
+              printf 'ci_attempt=%s\n' "${GITHUB_RUN_ATTEMPT}"
+              printf 'application_id=com.rumitx.app\n'
+              printf 'apk_signing=CI DEBUG CERTIFICATE; NOT INSTALLABLE OVER RELEASE-SIGNED V2.3.1\n'
+              printf 'physical_s80_test=NOT PERFORMED BY CI\n'
+            } > BUILD_INFO.txt
+          )
+          {
+            echo '### RumiTX TX_AUDIO APK — DEBUG TEST BUILD ONLY'
+            echo ''
+            echo 'Artifact includes **APK**, **SHA256SUMS.txt**, and **BUILD_INFO.txt**.'
+            echo ''
+            echo '\`\`\`text'
+            cat ci-artifacts/SHA256SUMS.txt
+            echo '\`\`\`'
+            echo ''
+            echo 'Verify after extracting the GitHub Actions artifact:'
+            echo '\`\`\`bash'
+            echo 'sha256sum -c SHA256SUMS.txt'
+            echo '\`\`\`'
+            echo ''
+            echo '**Signing gate:** the original v2.3.1 release signing certificate is required for an in-place update. Do not uninstall the existing app or sideload this debug APK over it.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - name: Upload APK + SHA256 + build provenance (GitHub Actions only)
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: rumitx-v231-tx-audio-debug-NOT-INSTALLABLE-OVER-RELEASE
-          path: app/build/outputs/apk/debug/*.apk
+          name: rumitx-v231-tx-audio-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-artifacts/
           if-no-files-found: error
+          retention-days: 30
