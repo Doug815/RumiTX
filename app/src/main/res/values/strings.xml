@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RumiTX</string>
+    <string name="no_channel">No channel selected</string>
+    <string name="hold_to_talk">HOLD TO TALK</string>
+    <string name="add_channel">+ Channel</string>
+    <string name="discovery">Discovery</string>
+    <string name="save_channel">SAVE CHANNEL</string>
+    <string name="start_scan">START SCAN</string>
+    <string name="stop_scan">STOP SCAN</string>
+</resources>

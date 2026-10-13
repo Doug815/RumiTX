@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- RumiTX Discovery Mode: band scanner + tone decoder -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp" android:background="#050508">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="DISCOVERY / 2030" android:textColor="#00F0FF"
+        android:textSize="24sp"
+        android:textStyle="bold" />
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Scan a band, find signals, detect tones, tap to save."
+        android:textSize="14sp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="16dp">
+
+        <EditText
+            android:id="@+id/scan_start"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="Start MHz"
+            android:text="440.0"
+            android:inputType="numberDecimal" />
+
+        <EditText
+            android:id="@+id/scan_end"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="End MHz"
+            android:text="450.0"
+            android:inputType="numberDecimal" />
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/scan_button"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="START SCAN"
+        android:textSize="20sp"
+        android:layout_marginTop="8dp" />
+
+    <ProgressBar
+        android:id="@+id/scan_progress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" />
+
+    <TextView
+        android:id="@+id/scan_freq_now"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="--.---- MHz"
+        android:textSize="32sp" android:textColor="#00F0FF" android:fontFamily="monospace" android:shadowColor="#00F0FF" android:shadowRadius="8"
+        android:textStyle="bold"
+        android:layout_marginTop="8dp"
+        android:layout_gravity="center_horizontal" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Found Signals (tap to save as channel):"
+        android:textStyle="bold"
+        android:layout_marginTop="16dp" />
+
+    <ListView
+        android:id="@+id/results_list"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+</LinearLayout>

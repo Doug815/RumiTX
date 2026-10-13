@@ -1,0 +1,2 @@
+rootProject.name = "RumiTX"
+include ':app'
