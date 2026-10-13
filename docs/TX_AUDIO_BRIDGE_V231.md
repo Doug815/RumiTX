@@ -229,3 +229,46 @@ parameter mapping and independent PTT watchdog validation.
 A GitHub Actions workflow produces a *debug test build* only if CI passes.
 That artifact is not an installable upgrade to a differently-signed release.
 No on-device or RF validation has yet been performed here.
+
+
+## RTL-SDR V4: verify actual received DMR speech
+
+The reported acoustic versus voice_call_probe A/B test measured 29.8 dB
+versus 30.4 dB RF above noise. Both transmissions keyed. Neither proves
+that the generated spoken message survived DMR vocoding. Acoustic output
+was restored as the known-good default; preserve the 1,000 ms delay
+between successful PTT key-down and playback start.
+
+The feature branch includes a **receive-only by default** DSD-FME
+verification tool for Doug's Omarchy ThinkPad and RTL-SDR Blog V4:
+
+    python3 tools/dmr_rx_capture.py --freq 446.00625 --dry-run
+    python3 tools/dmr_rx_capture.py --freq 446.00625 --duration 40 --gain 8
+
+When a separate operator-authorized transmission occurs, it saves
+per-call decoded DMR speech WAVs in the session directory, DMR
+event/decoder logs, and a JSON report. For an independently captured
+decoded WAV (e.g. from SDRTrunk), compare timing with the original TTS:
+
+    python3 tools/analyze_dmr_voice.py RECEIVED_WAV_DIRECTORY --reference prepared.wav
+
+The receiver supports **explicit**, device-allowlisted live-test
+transmission using --send --ack-authorized --wav prepared.wav, passing
+through the existing signed TX_AUDIO client. No second RumiTX radio
+helper/serial connection is opened.
+
+Upstream DSD-FME audio_work documents -fs simplex, -i rtl direct RTL,
+-7 output directory -P per-call decoded speech WAV, and -J event log:
+https://github.com/lwvmobile/dsd-fme/blob/audio_work/examples/cygwin_bat/complete_usage_options.txt
+Installation for Arch/Omarchy is documented upstream:
+https://github.com/lwvmobile/dsd-fme/blob/audio_work/examples/Install_Notes.md
+Check current RTL-SDR V4 drivers and MBELib library/licensing before use;
+do not blindly install outdated prebuilt dependencies. SDRTrunk with
+JMBE is another supported DMR speech decoding route.
+
+**Evidence levels:** RF detected < DMR sync < non-silent decoded WAV <
+independently verified spoken words. A real decoded speech WAV can still
+come from **acoustic** speaker-to-mic coupling. Direct digital audio
+injection requires additional isolated routing tests; the analyzer
+deliberately does not assert it. Use low RTL gain to avoid saturating
+the receiver front end with a nearby transmitting S80.
