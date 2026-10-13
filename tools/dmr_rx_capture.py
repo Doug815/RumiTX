@@ -70,17 +70,26 @@ def dmr_sync_summary(log_text: str) -> dict:
 
 
 def build_decoder_command(program: str, freq: str, gain: int, ppm: int,
-                          device: int, output: Path, save_demod: bool = False) -> list[str]:
+                          device: int, output: Path, save_demod: bool = False,
+                          rtl_bw_khz: int = 12, decoder_mode: str = "dmr",
+                          invert_dmr: bool = False, rtl_volume: int = 2) -> list[str]:
     validate_mhz(freq)
+    rtl_dsp_tuning_plan(freq, rtl_bw_khz)
     if not 0 <= gain <= 49 or not -100 <= ppm <= 100 or device < 0:
         raise ValueError("decoder device/gain/ppm outside supported range")
+    if decoder_mode not in ("dmr", "auto"):
+        raise ValueError("decoder mode must be dmr or auto")
+    if rtl_volume not in (1, 2, 3):
+        raise ValueError("RTL volume multiplier must be 1, 2, or 3")
     audio = output / "decoded_wavs"
     events = output / "dmr_events.log"
     command = [
-        program, "-fs",                         # DMR BS/MS simplex decoding
-        "-i", f"rtl:{device}:{freq}M:{gain}:{ppm}:12:0:2",
+        program, "-fs" if decoder_mode == "dmr" else "-fa",
+        "-i", f"rtl:{device}:{freq}M:{gain}:{ppm}:{rtl_bw_khz}:0:{rtl_volume}",
         "-o", "null",                           # audio saved to WAV, not speakers
     ]
+    if invert_dmr:
+        command += ["-xr"]  # explicitly expect inverted DMR signal
     if save_demod:
         # 48k discriminator audio, NOT decoded speech and NOT raw IQ.
         # Reprocess it offline with: dsd-fme -fs -i file.wav -o null ...
