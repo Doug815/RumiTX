@@ -50,6 +50,8 @@ public final class VoiceTxBridge {
     private final RadioController radio;
     private final File root;
     private volatile CountDownLatch completion;
+    // Existing HIDL adapter, injected by RadioService; never a second HIDL owner.
+    private volatile HidlAdapter hidlRxProbeAdapter;
     private long previousEnd = -100000;
 
     public VoiceTxBridge(Context context, RadioController controller) {
@@ -61,6 +63,11 @@ public final class VoiceTxBridge {
     }
 
     public static boolean isTransmitting() { return BUSY.get(); }
+
+    /** Same HIDL instance already owned by the radio foreground service. */
+    public void attachHidlRxProbe(HidlAdapter existingAdapter) {
+        hidlRxProbeAdapter = existingAdapter;
+    }
 
     public BroadcastReceiver receiver() {
         return new BroadcastReceiver() {
@@ -337,6 +344,30 @@ public final class VoiceTxBridge {
         return true;
     }
 
+    /**
+     * Distinct one-shot owner-only RX-route experiment, layered onto the
+     * existing four-second, signed, all-zero analog PTT-only diagnostic.
+     * The secondary file is not a TX_AUDIO broadcast extra, and a normal
+     * analog voice request is rejected if this file was left armed.
+     */
+    private boolean consumeAnalogRxRouteProbe(Request request, boolean pttOnly)
+            throws IOException {
+        if (!"0".equals(request.digital)) return false; // DMR is untouched.
+        File setting = new File(root, "analog_rx_route_probe.txt");
+        if (!setting.isFile()) return false;
+        if (!pttOnly)
+            throw new IOException("RX route probe requires the signed analog ptt_only test");
+        String value = firstLine(setting);
+        if (!"suspend_stock_rx".equals(value))
+            throw new IOException("invalid analog_rx_route_probe.txt; use suspend_stock_rx");
+        if (hidlRxProbeAdapter == null)
+            throw new IOException("HIDL adapter not initialized; cannot run RX route probe");
+        if (!setting.delete())
+            throw new IOException("cannot disarm one-shot RX route probe; TX rejected");
+        Log.w(TAG, "ANALOG_RX_ROUTE_PROBE_ARMED one-shot, no player, no volume changes");
+        return true;
+    }
+
     private void holdAnalogPttOnly() throws IOException, InterruptedException {
         final long deadline = SystemClock.elapsedRealtime() + ANALOG_PTT_ONLY_HOLD_MS;
         while (SystemClock.elapsedRealtime() < deadline) {
@@ -372,6 +403,9 @@ public final class VoiceTxBridge {
         String outputProfile = "acoustic";
         int analogPercent = -1;
         boolean pttOnlyDiagnostic = false;
+        boolean rxRouteProbeRequested = false;
+        boolean rxRouteSuspended = false;
+        HidlAdapter rxProbe = null;
         CountDownLatch done = new CountDownLatch(1);
         AtomicBoolean audioError = new AtomicBoolean();
         completion = done;
@@ -384,6 +418,7 @@ public final class VoiceTxBridge {
                 throw new IOException("radio unavailable or manually keyed");
             int millis = validateWav(r);
             pttOnlyDiagnostic = consumeAnalogPttOnlyDiagnostic(r, millis);
+            rxRouteProbeRequested = consumeAnalogRxRouteProbe(r, pttOnlyDiagnostic);
             if (pttOnlyDiagnostic) {
                 // Do not even open MediaPlayer / change stream volume here.
                 outputProfile = "ptt_only_no_media_player";
@@ -463,6 +498,16 @@ public final class VoiceTxBridge {
                 Log.i(TAG, "ANALOG_PTT_ONLY_NO_AUDIO_ENGINE: skip MediaPlayer " +
                         "creation, prepare(), start(), and all stream volume changes");
             }
+            if (rxRouteProbeRequested) {
+                // StockAudioRoute uses only its already-existing RX shutdown
+                // values. Do not alter speak_enable/HIDL ownership or DMR.
+                rxProbe = hidlRxProbeAdapter;
+                if (rxProbe == null ||
+                        !rxProbe.suspendStockRxRouteForAnalogProbe())
+                    throw new IOException("stock RX route not open or suspension failed; no PTT");
+                rxRouteSuspended = true;
+                Log.w(TAG, "ANALOG_RX_ROUTE_PROBE_OFF before PTT; RX may be muted");
+            }
             pttAttempted = true;
             if (!radio.pttDown()) throw new IOException("PTT DOWN not acknowledged");
             Log.i(TAG, "PTT_DOWN_CONFIRMED; start 1000 ms pre-playback settle");
@@ -472,6 +517,7 @@ public final class VoiceTxBridge {
                 holdAnalogPttOnly();
                 Log.w(TAG, "ANALOG_PTT_ONLY_COMPLETE: no WAV playback attempted");
                 note = "mode=ANALOG_FM; diagnostic=ptt_only_no_media_player" +
+                        "; rx_route_probe=" + (rxRouteProbeRequested ? "stock_rx_suspended" : "baseline") +
                         "; hold_ms=" + ANALOG_PTT_ONLY_HOLD_MS +
                         "; no playback or stream gain changed; RF audio NOT verified";
             } else {
@@ -516,6 +562,22 @@ public final class VoiceTxBridge {
                     success = false;
                     note += "; channel restore exception: " + error.getClass().getSimpleName();
                     Log.e(TAG, "Cannot restore prior channel", error);
+                }
+            }
+            // Always restore the vendor RX audio route AFTER PTT release.
+            // Attempt restoration even if the diagnostic TX was cancelled.
+            if (rxRouteSuspended) {
+                try {
+                    boolean restored = rxProbe.restoreStockRxRouteAfterAnalogProbe();
+                    Log.w(TAG, "ANALOG_RX_ROUTE_PROBE_RESTORED invoked=" + restored);
+                    if (!restored) {
+                        success = false;
+                        note += "; stock RX route restoration failed; restart radio service";
+                    }
+                } catch (Exception restoreFailure) {
+                    success = false;
+                    note += "; RX route restoration exception; restart radio service";
+                    Log.e(TAG, "ANALOG_RX_ROUTE_PROBE_RESTORE_FAILED", restoreFailure);
                 }
             }
             previousEnd = SystemClock.elapsedRealtime();
