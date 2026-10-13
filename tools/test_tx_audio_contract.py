@@ -36,5 +36,26 @@ class BridgeContractTests(unittest.TestCase):
             self.assertNotEqual(forged, actual)
 
 
+    def test_ptt_keys_before_one_second_playback_wait(self):
+        # Structural regression test complements Android CI compilation.
+        # A real stopwatch/on-air verification remains required on the S80.
+        src = Path("app/src/main/java/com/rumitx/app/VoiceTxBridge.java").read_text()
+        self.assertIn("PRE_PLAYBACK_SETTLE_MS = 1000L;", src)
+        body = src.split("if (!radio.pttDown())", 1)[1].split("player.start();", 1)[0]
+        self.assertIn("awaitMicReady();", body)
+        self.assertNotIn("Thread.sleep(650)", body)
+        self.assertIn("if (closing.get())", src.split("private void awaitMicReady()", 1)[1].split("private void transmitExclusive", 1)[0])
+        # PTT-UP belongs to the finally cleanup, not a post-playback tail.
+        cleanup = src.split("} finally {", 1)[1]
+        self.assertIn("radio.pttUp()", cleanup)
+
+    def test_audio_profile_is_opt_in(self):
+        src = Path("app/src/main/java/com/rumitx/app/VoiceTxBridge.java").read_text()
+        self.assertIn('if (!profile.isFile()) return "acoustic";', src)
+        self.assertIn('"voice_call_probe"', src)
+        self.assertIn("AudioManager.STREAM_VOICE_CALL", src)
+        self.assertNotIn("SET_LOOPBACK_TYPE=", src)
+
+
 if __name__ == "__main__":
     unittest.main()
