@@ -1,0 +1,13 @@
+# Never publish TX pairing credentials or Android signing keys
+tx_audio.key
+allowed_channels.csv
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
+__pycache__/
+*.pyc
+.gradle/
+**/build/
+local.properties
