@@ -526,7 +526,7 @@ public final class VoiceTxBridge {
                         "creation, prepare(), start(), and all stream volume changes");
             }
             if (rxRouteProbeRequested) {
-                // StockAudioRoute changes ONLY SET_LOOPBACK_TYPE=3,3 -> 0.
+                // StockAudioRoute changes ONLY the stock loopback setting 3,3 -> off.
                 // Mic gain, MIC_NUM, speak_enable/HIDL ownership and DMR stay put.
                 rxProbe = hidlRxProbeAdapter;
                 if (rxProbe == null ||
