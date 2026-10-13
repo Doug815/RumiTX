@@ -126,6 +126,59 @@ class AnalogWhineTests(unittest.TestCase):
                 self.assertEqual(f.getframerate(), 16000)
                 self.assertEqual(f.readframes(64000), bytes(128000))
 
+    def test_stock_rx_loopback_probe_changes_only_loopback_during_tx(self):
+        route = Path("app/src/main/java/com/rumitx/app/StockAudioRoute.java").read_text()
+        suspend = route.split("public synchronized boolean suspendForAnalogTxProbe()", 1)[1].split(
+            "public synchronized boolean restoreAfterAnalogTxProbe()", 1)[0]
+        restore = route.split("public synchronized boolean restoreAfterAnalogTxProbe()", 1)[1].split(
+            "public synchronized void stop()", 1)[0]
+        self.assertIn("lastRxCallbackOpen", suspend)
+        self.assertIn('parameter("SET_LOOPBACK_TYPE=0")', suspend)
+        self.assertIn('parameter("SET_LOOPBACK_TYPE=3, 3")', suspend)  # error rollback
+        self.assertNotIn("setStockStoppedRoute()", suspend)
+        self.assertNotIn('parameter("SET_MIC_NUM=', suspend)
+        self.assertNotIn('parameter("SET_MIC_CHOOSE=', suspend)
+        self.assertIn('parameter("SET_LOOPBACK_TYPE=3, 3")', restore)
+        self.assertIn("lastRxCallbackOpen", restore)
+        self.assertIn("setStockStoppedRoute()", restore)  # deferred RX-OFF callback only
+        self.assertNotIn('parameter("SET_MIC_NUM=', restore)
+        self.assertIn("if (temporarilySuspended)", route)
+        self.assertIn("RX route callback deferred", route)
+
+    def test_probe_requires_signed_analog_ptt_only_and_restores_after_unkey(self):
+        bridge = Path("app/src/main/java/com/rumitx/app/VoiceTxBridge.java").read_text()
+        method = bridge.split("private boolean consumeAnalogRxRouteProbe(", 1)[1].split(
+            "private void holdAnalogPttOnly()", 1)[0]
+        self.assertIn('if (!"0".equals(request.digital)) return false;', method)
+        self.assertIn('if (!pttOnly)', method)
+        self.assertIn('"suspend_stock_rx"', method)
+        self.assertIn('if (!setting.delete())', method)
+        self.assertLess(bridge.index("rxRouteProbeRequested = consumeAnalogRxRouteProbe"),
+                        bridge.index("if (!radio.programChannel(ch))"))
+        self.assertLess(bridge.index("suspendStockRxRouteForAnalogProbe()"),
+                        bridge.index("if (!radio.pttDown())"))
+        cleanup = bridge.split("        } finally {", 1)[1]
+        self.assertLess(cleanup.index("radio.pttUp()"),
+                        cleanup.index("restoreStockRxRouteAfterAnalogProbe()"))
+        self.assertIn("if (radio.isKeyed())", cleanup)
+        self.assertIn("ANALOG_RX_ROUTE_PROBE_RESTORE_DEFERRED", cleanup)
+        self.assertIn("ANALOG_RX_ROUTE_PROBE_RESTORED", cleanup)
+
+    def test_rx_probe_helper_is_one_shot_and_matches_build_version(self):
+        import subprocess
+        script = Path("tools/set_analog_rx_route_probe.sh")
+        check = subprocess.run(["bash", "-n", str(script)], capture_output=True,
+                               text=True, check=False)
+        self.assertEqual(check.returncode, 0, check.stderr)
+        code = script.read_text()
+        build = Path("app/build.gradle").read_text()
+        self.assertIn("versionCode 20301037", build)
+        self.assertIn("versionCode=20301037", code)
+        self.assertIn("suspend_stock_rx", code)
+        self.assertIn("analog_rx_route_probe.txt", code)
+        self.assertIn("analog_tx_diagnostic_mode.txt", code)
+        self.assertNotIn("am broadcast", code)
+
     def test_android_analog_gain_isolated_and_restored(self):
         code = Path("app/src/main/java/com/rumitx/app/VoiceTxBridge.java").read_text()
         self.assertIn("private int analogPlaybackPercent() throws IOException", code)
