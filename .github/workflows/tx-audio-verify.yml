@@ -31,6 +31,8 @@ jobs:
           test -x "$SDKMANAGER"
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-33" "build-tools;33.0.2"
+      - name: Generate compile-only Android 8.1 HIDL signatures
+        run: bash tools/build_hidl_compile_stubs.sh
       - name: Gradle 7.5
         uses: gradle/actions/setup-gradle@v4
         with:
