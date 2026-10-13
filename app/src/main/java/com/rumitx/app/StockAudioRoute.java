@@ -6,9 +6,11 @@ import android.media.AudioManager;
 /**
  * MediaTek vendor settings recovered from stock VoiceRecorder.
  *
- * The optional analog-FM diagnostic temporarily applies ONLY the
- * existing stock close() values and restores the exact known RX values.
- * There is no experimental enum sweep, mixer ioctl, or HIDL transaction.
+ * The optional analog-FM diagnostic changes ONLY SET_LOOPBACK_TYPE from
+ * the established RX value "3, 3" to the established stop value "0".
+ * Other mic selection, gain, audio focus, HIDL and mixer settings remain
+ * untouched during TX, so the A/B isolates the loopback parameter.
+ * No enum sweep, mixer ioctl or new HIDL transaction is attempted.
  */
 public final class StockAudioRoute {
     private final AudioManager audio;
@@ -88,17 +90,20 @@ public final class StockAudioRoute {
             return false;
         }
         temporarilySuspended = true;
-        boolean ok = setStockStoppedRoute();
+        // Isolate one variable: leave MIC_NUM=2, MIC_CHOOSE and MIC2
+        // counter untouched, and call ONLY the recognized HAL
+        // SetLoopbackOff() path through SET_LOOPBACK_TYPE=0.
+        boolean ok = parameter("SET_LOOPBACK_TYPE=0");
         if (!ok) {
             temporarilySuspended = false;
-            setStockRxRoute(); // best-effort rollback before any PTT
+            parameter("SET_LOOPBACK_TYPE=3, 3"); // best-effort rollback
             RadioLog.e("RumiTX-Audio",
-                    "ANALOG_RX_ROUTE_PROBE_ABORT: stock stop parameters failed");
+                    "ANALOG_RX_ROUTE_PROBE_ABORT: loopback-off command failed");
             return false;
         }
         RadioLog.i("RumiTX-Audio",
-                "ANALOG_RX_ROUTE_PROBE_SUSPENDED: stock stop route applied; " +
-                "vendor HAL acknowledgment NOT independently verified");
+                "ANALOG_RX_ROUTE_PROBE_SUSPENDED: ONLY SET_LOOPBACK_TYPE=0; " +
+                "mic selection and gain unchanged; HAL confirmation unavailable");
         return true;
     }
 
@@ -106,8 +111,12 @@ public final class StockAudioRoute {
     public synchronized boolean restoreAfterAnalogTxProbe() {
         if (!temporarilySuspended) return true;
         temporarilySuspended = false;
-        boolean ok = lastRxCallbackOpen ? setStockRxRoute()
-                                        : setStockStoppedRoute();
+        // If vendor RX remains open, restore precisely the original
+        // loopback-on setting; avoid another MIC_NUM/gain change.
+        // If an RX-off callback arrived during TX, honor its newer state.
+        boolean ok = lastRxCallbackOpen
+                ? parameter("SET_LOOPBACK_TYPE=3, 3")
+                : setStockStoppedRoute();
         RadioLog.i("RumiTX-Audio",
                 "ANALOG_RX_ROUTE_PROBE_RESTORE: lastRxOpen=" +
                 lastRxCallbackOpen + " invoked=" + ok +
