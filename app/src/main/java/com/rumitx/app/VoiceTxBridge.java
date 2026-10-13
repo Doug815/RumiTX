@@ -34,8 +34,8 @@ public final class VoiceTxBridge {
     public static final String RESULT_ACTION = "com.rumitx.app.TX_RESULT";
     private static final String TAG = "RumiTX-TX";
     private static final int MAX_TX_MS = 15000;
-    // Operator-verified: key first, then allow ONE SECOND for the mic/DMR TX
-    // path to stabilize before generating any audio. No post-playback delay.
+    // Operator-verified: key first, then allow ONE SECOND for the mic/TX
+    // path to stabilize before playing the WAV. No post-playback delay.
     private static final long PRE_PLAYBACK_SETTLE_MS = 1000L;
     private static final long CLOCK_SKEW_MS = 90000;
     private static final AtomicBoolean BUSY = new AtomicBoolean();
@@ -169,12 +169,23 @@ public final class VoiceTxBridge {
             throw new SecurityException("expired request");
         r.txMHz = mhz(r.tx);
         r.rxMHz = mhz(r.rx);
-        if (!r.digital.equals("1")) throw new SecurityException("DMR only");
+        if (!r.digital.equals("0") && !r.digital.equals("1"))
+            throw new SecurityException("digital must be 0 (analog FM) or 1 (DMR)");
         r.colorCode = Integer.parseInt(r.cc);
         r.talkgroup = Integer.parseInt(r.tg);
-        if (r.colorCode < 0 || r.colorCode > 15 ||
-                r.talkgroup < 1 || r.talkgroup > 16777215)
-            throw new SecurityException("invalid CC / talkgroup");
+        if (r.digital.equals("1")) {
+            if (r.colorCode < 0 || r.colorCode > 15 ||
+                    r.talkgroup < 1 || r.talkgroup > 16777215)
+                throw new SecurityException("invalid DMR CC / talkgroup");
+        } else {
+            // v1 analog path supports SIMPLEX, no CTCSS/DCS, narrowband.
+            // DMR CC/TG are signed compatibility fields and MUST be 0/0.
+            // Reject hidden DMR settings instead of silently misapplying them.
+            if (r.colorCode != 0 || r.talkgroup != 0)
+                throw new SecurityException("analog FM requires cc=0 and tg=0");
+            if (Math.abs(r.txMHz - r.rxMHz) > 0.000001)
+                throw new SecurityException("analog split TX/RX not verified; simplex only");
+        }
 
         File path = new File(r.audio).getCanonicalFile();
         String base = new File(root, "audio").getCanonicalPath() + File.separator;
@@ -303,10 +314,25 @@ public final class VoiceTxBridge {
             ch.name = "Voice TX temporary";
             ch.txFreqMHz = r.txMHz;
             ch.rxFreqMHz = r.rxMHz;
-            ch.isDigital = true;
-            ch.colorCode = r.colorCode;
-            ch.talkgroup = r.talkgroup;
-            if (!radio.programChannel(ch)) throw new IOException("channel programming failed");
+            ch.isDigital = r.digital.equals("1");
+            if (ch.isDigital) {
+                ch.colorCode = r.colorCode;
+                ch.talkgroup = r.talkgroup;
+            } else {
+                // Channel.buildProgramFrame() selects DMR007 68 35 analog FM.
+                // No tones means ordinary analog radios can receive in CSQ.
+                ch.bandwidthKhz = 12;  // narrowband: 68 35 gwb=0
+                ch.txCtcssHz = 0;
+                ch.rxCtcssHz = 0;
+                ch.txDcsCode = null;
+                ch.rxDcsCode = null;
+                ch.squelchLevel = 4;
+            }
+            Log.i(TAG, "TX_AUDIO mode=" + (ch.isDigital ? "DMR" : "ANALOG_FM") +
+                    " tx=" + r.tx + " rx=" + r.rx);
+            if (!radio.programChannel(ch))
+                throw new IOException((ch.isDigital ? "DMR" : "analog FM") +
+                        " channel programming failed; no PTT issued");
             programmed = true;
             if (closing.get()) throw new IOException("cancelled before TX");
 
@@ -338,7 +364,9 @@ public final class VoiceTxBridge {
                 throw new IOException("playback timeout");
             if (audioError.get()) throw new IOException("audio playback failure");
             if (closing.get()) throw new IOException("cancelled during TX");
-            note = "route=" + outputProfile + "; local playback complete; decoded RF audio NOT verified";
+            note = "mode=" + (r.digital.equals("1") ? "DMR" : "ANALOG_FM") +
+                    "; route=" + outputProfile +
+                    "; local playback complete; received RF audio NOT verified";
             success = true;
         } catch (Exception error) {
             note = error.getClass().getSimpleName() + ": " + error.getMessage();
@@ -389,7 +417,8 @@ public final class VoiceTxBridge {
                     .replace("\n", " ").replace("\r", " ");
             String json = "{\"timestamp_ms\":" + System.currentTimeMillis()
                     + ",\"tx_mhz\":\"" + r.tx + "\",\"rx_mhz\":\"" + r.rx
-                    + "\",\"duration_ms\":" + elapsed + ",\"sha256\":\"" + r.sha
+                    + "\",\"digital\":\"" + r.digital + "\""
+                    + ",\"duration_ms\":" + elapsed + ",\"sha256\":\"" + r.sha
                     + "\",\"success\":" + success + ",\"note\":\"" + note + "\"}\n";
             out.write(json.getBytes(StandardCharsets.UTF_8));
             out.getFD().sync();
