@@ -68,6 +68,64 @@ class AnalogWhineTests(unittest.TestCase):
         self.assertIn('"mode": "receive_only"', output.getvalue())
         self.assertIn('"rf_target_mhz": "446.00625"', output.getvalue())
 
+    def test_ptt_only_is_analog_only_one_shot_and_signed_silent_wav(self):
+        src = Path("app/src/main/java/com/rumitx/app/VoiceTxBridge.java").read_text()
+        method = src.split("private boolean consumeAnalogPttOnlyDiagnostic(", 1)[1].split(
+            "private void holdAnalogPttOnly()", 1)[0]
+        self.assertIn('if (!"0".equals(r.digital)) return false;', method)
+        self.assertIn('"analog_tx_diagnostic_mode.txt"', method)
+        self.assertIn('if (!"ptt_only".equals(selected))', method)
+        self.assertIn('wavMillis != ANALOG_PTT_ONLY_HOLD_MS', method)
+        self.assertIn('ANALOG_PTT_ONLY_HOLD_MS = 4000;', src)
+        self.assertIn('source.seek(44);', method)
+        self.assertIn('if (block[i] != 0)', method)
+        self.assertIn('if (!mode.delete())', method)
+        self.assertLess(src.index('pttOnlyDiagnostic = consumeAnalogPttOnlyDiagnostic'),
+                        src.index('if (!radio.programChannel(ch))'))
+        self.assertIn('int millis = validateWav(r);', src)
+        self.assertIn('if (!pttOnlyDiagnostic) {', src)
+        player_path = src.split('            if (!pttOnlyDiagnostic) {', 1)[1].split(
+            '            pttAttempted = true;', 1)[0]
+        self.assertIn('player = new MediaPlayer();', player_path)
+        self.assertIn('manager.setStreamVolume(streamType, target, 0);', player_path)
+        self.assertIn('ANALOG_PTT_ONLY_NO_AUDIO_ENGINE', player_path)
+        self.assertIn('holdAnalogPttOnly();', src)
+        self.assertIn('ANALOG_PTT_ONLY_COMPLETE', src)
+
+    def test_ptt_only_four_seconds_is_bounded_and_unkeyed_on_failure(self):
+        src = Path("app/src/main/java/com/rumitx/app/VoiceTxBridge.java").read_text()
+        hold = src.split('private void holdAnalogPttOnly()', 1)[1].split(
+            'private void awaitMicReady()', 1)[0]
+        self.assertIn('SystemClock.elapsedRealtime() + ANALOG_PTT_ONLY_HOLD_MS', hold)
+        self.assertIn('if (closing.get())', hold)
+        self.assertIn('if (!radio.isKeyed())', hold)
+        self.assertIn('Thread.sleep(Math.min(50L', hold)
+        cleanup = src.split('        } finally {', 1)[1]
+        self.assertIn('radio.pttUp()', cleanup)
+        self.assertIn('radio.programChannel(previousChannel)', cleanup)
+
+    def test_ptt_only_adb_helper_shell_syntax(self):
+        import subprocess
+        helper = Path("tools/set_analog_fm_diag_mode.sh")
+        result = subprocess.run(["bash", "-n", str(helper)], capture_output=True,
+                                text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        code = helper.read_text()
+        self.assertIn('analog_tx_diagnostic_mode.txt', code)
+        self.assertIn('ptt_only', code)
+        self.assertIn('reset', code)
+        self.assertNotIn('am broadcast', code)
+
+    def test_signed_exact_four_second_silence_source_for_ptt_only(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            generate(root, duration=4.0)
+            silence = root / "silence.wav"
+            with wave.open(str(silence), "rb") as f:
+                self.assertEqual(f.getnframes(), 64000)
+                self.assertEqual(f.getframerate(), 16000)
+                self.assertEqual(f.readframes(64000), bytes(128000))
+
     def test_android_analog_gain_isolated_and_restored(self):
         code = Path("app/src/main/java/com/rumitx/app/VoiceTxBridge.java").read_text()
         self.assertIn("private int analogPlaybackPercent() throws IOException", code)
