@@ -164,6 +164,12 @@ class AnalogWhineTests(unittest.TestCase):
         self.assertIn("ANALOG_RX_ROUTE_PROBE_RESTORE_DEFERRED", cleanup)
         self.assertIn("ANALOG_RX_ROUTE_PROBE_RESTORED", cleanup)
 
+    def test_service_attaches_hidl_adapter_after_bridge_is_created(self):
+        svc = Path("app/src/main/java/com/rumitx/app/RadioService.java").read_text()
+        self.assertLess(svc.index("voiceBridge=new VoiceTxBridge(this,radio);"),
+                        svc.index("lifecycle.execute(()->initialize(radio));"))
+        self.assertIn("if(voiceBridge!=null)voiceBridge.attachHidlRxProbe(hidl);", svc)
+
     def test_rx_probe_helper_is_one_shot_and_matches_build_version(self):
         import subprocess
         script = Path("tools/set_analog_rx_route_probe.sh")
