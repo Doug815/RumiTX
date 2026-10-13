@@ -227,3 +227,108 @@ physical PTT and a separately powered receiver.
 
 No unsigned diagnostic broadcast field exists. The private local mode
 setting is intentionally separate from the signed V1 message format.
+
+
+## HAL-backed loopback OFF diagnostic (v20301037)
+
+Operator Ghidra finding: AudioALSAHardware::setParameters recognizes
+SET_LOOPBACK_TYPE, parses its two numeric fields with sscanf, and
+dispatches nonzero input to LoopbackManager::SetLoopbackOn, zero to
+LoopbackManager::SetLoopbackOff. This establishes a meaningful
+single-variable test, but not which physical mic/ADC the loopback uses.
+
+Prior RF captures of the same silent 4-second analog FM transmission:
+- 40% Android playback: 961Hz dominant with ~240Hz spacing, 48.6dB peak
+- 0% Android playback: 1609Hz dominant, ~402Hz spacing, ~48dB peak
+- NO Android MediaPlayer, PTT-only: 1680Hz dominant, ~420Hz spacing,
+  50.6dB peak. The 961Hz line was at -93.8dB (noise floor).
+
+The v20301037 experimental ON/OFF test deliberately changes ONLY
+SET_LOOPBACK_TYPE, preserving MIC_NUM, MIC_CHOOSE, gain, audio focus,
+DMR, HIDL ownership and all kernel PTT logic. Before the one-shot
+four-second authorized FM PTT, the adapter issues only
+SET_LOOPBACK_TYPE=0. After PTT UP it restores only
+SET_LOOPBACK_TYPE=3, 3, unless a vendor callback switched RX off.
+A failed unkey never intentionally re-enables loopback while keyed.
+
+The test still requires the existing HMAC-authenticated, per-frequency
+allowlisted analog TX_AUDIO request, the exact four-second zero-PCM
+signed WAV, the one-second TX settling delay, and a separate FM RX radio.
+The rooted ADB arming step alone DOES NOT transmit.
+
+PREP (on the ThinkPad with properly signed v20301037 installed):
+
+    git fetch origin
+    git switch feature/tx-audio-v231
+    git pull --ff-only
+    python3 tools/make_analog_fm_test_wavs.py --duration 4
+    export FM_MHZ='YOUR_ACTUALLY_AUTHORIZED_ANALOG_MHZ'
+
+BASELINE with the SAME installed v20301037, normal loopback active:
+First disarm leftover experimental flags and arm standard PTT-only.
+
+    bash tools/set_analog_rx_route_probe.sh reset
+    bash tools/set_analog_fm_diag_mode.sh ptt_only
+
+Terminal A, record before TX:
+
+    python3 tools/analog_fm_rx_capture.py --freq "$FM_MHZ" --duration 25 \
+      --output analog_fm_rx_tests/baseline_loopback_on
+
+Terminal B, while receiving, issue one signed allowed analog key:
+
+    python3 tools/tx_audio_client.py --mode analog --tx "$FM_MHZ" \
+      --wav analog_fm_diag_sources/silence.wav --adb
+
+EXPERIMENTAL, ONLY LOOPBACK OFF, identical other RF settings:
+Wait until PTT completely releases, receiver quiet and cooldown done.
+
+    bash tools/set_analog_rx_route_probe.sh arm
+
+Terminal A (new receive capture with identical gain/antenna/distance):
+
+    python3 tools/analog_fm_rx_capture.py --freq "$FM_MHZ" --duration 25 \
+      --output analog_fm_rx_tests/test_loopback_off
+
+Terminal B, send ONE identical authorized signed test:
+
+    python3 tools/tx_audio_client.py --mode analog --tx "$FM_MHZ" \
+      --wav analog_fm_diag_sources/silence.wav --adb
+
+Expected log markers with RumiTX-TX and RumiTX-Audio:
+- ANALOG_RX_ROUTE_PROBE_ARMED
+- setParameters SET_LOOPBACK_TYPE=0
+- ANALOG_RX_ROUTE_PROBE_SUSPENDED
+- ANALOG_RX_ROUTE_PROBE_OFF before PTT
+- PTT_DOWN_CONFIRMED, ANALOG_PTT_ONLY_START, ANALOG_PTT_ONLY_COMPLETE
+- setParameters SET_LOOPBACK_TYPE=3, 3
+- ANALOG_RX_ROUTE_PROBE_RESTORED
+- TX_RESULT success with rx_route_probe=stock_rx_suspended
+
+Log command:
+
+    adb logcat -d -s RumiTX-TX:I RumiTX-Audio:I |
+      grep -E 'ANALOG_RX_ROUTE_PROBE|SET_LOOPBACK_TYPE|PTT_DOWN|TX_RESULT'
+
+Check receiver audio functionality again after test. The app logs invocation
+of setParameters; a successful reflection call alone is NOT vendor-HAL
+acknowledgment. Confirm with a separate received FM recording. The helper
+uses root to arm and checks versionCode=20301037. Both settings files are
+consumed BEFORE RF keying. If any leftovers remain, disarm with:
+
+    bash tools/set_analog_rx_route_probe.sh reset
+
+Interpret results:
+- If loopback OFF collapses the 420Hz harmonic series to background,
+  loopback is causally implicated. Next identify loopback type 3's physical
+  device mapping via Ghidra and verify real voice under controlled conditions
+  before attempting any permanent transmit routing change.
+- If whine stays unchanged, loopback is not necessary for its generation.
+  Investigate analog module mic bias, kernel PTT GPIO path and power rails.
+- If harmonic family moves but remains, suspect multiple interacting
+  mechanisms; compare SDR audio and an independent analog receiver.
+- If PTT release fails or RX audio cannot be restored, STOP testing,
+  physically unkey and restart the radio service or the phone.
+
+Never enable these probe values for normal digital or analog voice TX.
+This diagnostic intentionally records no speech; it is NOT a whine fix.
