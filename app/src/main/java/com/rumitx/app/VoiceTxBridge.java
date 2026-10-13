@@ -34,6 +34,9 @@ public final class VoiceTxBridge {
     public static final String RESULT_ACTION = "com.rumitx.app.TX_RESULT";
     private static final String TAG = "RumiTX-TX";
     private static final int MAX_TX_MS = 15000;
+    // Operator-verified: key first, then allow ONE SECOND for the mic/DMR TX
+    // path to stabilize before generating any audio. No post-playback delay.
+    private static final long PRE_PLAYBACK_SETTLE_MS = 1000L;
     private static final long CLOCK_SKEW_MS = 90000;
     private static final AtomicBoolean BUSY = new AtomicBoolean();
     private final AtomicBoolean closing = new AtomicBoolean();
@@ -234,11 +237,34 @@ public final class VoiceTxBridge {
     }
 
     private void transmit(Request request) {
-        // The underlying DMR007 helper socket is single-client.
-        // Lock the singleton for this entire operation; no second connection.
-        synchronized (radio) {
-            transmitExclusive(request);
+        // The bridge owns the logical session through BUSY and PttDispatcher.
+        // RadioController's individual hardware operations are synchronized.
+        // Do NOT hold its monitor during a full WAV: it must remain possible
+        // for an emergency/manual PTT-UP or helper watchdog to make progress.
+        transmitExclusive(request);
+    }
+
+    private String routeProfile() throws IOException {
+        // Operator-controlled, app-private experimentation switch.
+        // No HAL parameters are changed: this is only an Android output
+        // stream A/B test, NOT confirmed direct digital microphone injection.
+        File profile = new File(root, "audio_route_profile.txt");
+        if (!profile.isFile()) return "acoustic";
+        String value = firstLine(profile);
+        if ("acoustic".equals(value) || "voice_call_probe".equals(value))
+            return value;
+        throw new IOException("invalid audio_route_profile.txt; use acoustic or voice_call_probe");
+    }
+
+    private void awaitMicReady() throws IOException, InterruptedException {
+        final long target = SystemClock.elapsedRealtime() + PRE_PLAYBACK_SETTLE_MS;
+        while (SystemClock.elapsedRealtime() < target) {
+            if (closing.get()) throw new IOException("cancelled during PTT settling");
+            if (!radio.isKeyed()) throw new IOException("PTT released before audio started");
+            Thread.sleep(Math.min(50L, Math.max(1L, target - SystemClock.elapsedRealtime())));
         }
+        if (closing.get() || !radio.isKeyed())
+            throw new IOException("PTT released or cancelled before playback");
     }
 
     private void transmitExclusive(Request r) {
@@ -250,6 +276,8 @@ public final class VoiceTxBridge {
         MediaPlayer player = null;
         AudioManager manager = (AudioManager)app.getSystemService(Context.AUDIO_SERVICE);
         int oldVolume = -1;
+        int streamType = AudioManager.STREAM_MUSIC;
+        String outputProfile = "acoustic";
         CountDownLatch done = new CountDownLatch(1);
         AtomicBoolean audioError = new AtomicBoolean();
         completion = done;
@@ -261,6 +289,11 @@ public final class VoiceTxBridge {
             if (radio == null || !radio.isConnected() || radio.isKeyed())
                 throw new IOException("radio unavailable or manually keyed");
             int millis = validateWav(r);
+            outputProfile = routeProfile();
+            streamType = "voice_call_probe".equals(outputProfile)
+                    ? AudioManager.STREAM_VOICE_CALL : AudioManager.STREAM_MUSIC;
+            Log.i(TAG, "AUDIO_ROUTE profile=" + outputProfile +
+                    " stream=" + streamType + " (HAL uplink NOT verified)");
             previousChannel = radio.currentChannel();
             Channel ch = new Channel();
             ch.name = "Voice TX temporary";
@@ -274,7 +307,7 @@ public final class VoiceTxBridge {
             if (closing.get()) throw new IOException("cancelled before TX");
 
             player = new MediaPlayer();
-            player.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            player.setAudioStreamType(streamType);
             player.setDataSource(r.file.getAbsolutePath());
             player.setOnCompletionListener(mp -> done.countDown());
             player.setOnErrorListener((mp, what, extra) -> {
@@ -284,20 +317,24 @@ public final class VoiceTxBridge {
             });
             player.prepare();
             if (manager != null) {
-                oldVolume = manager.getStreamVolume(AudioManager.STREAM_MUSIC);
-                manager.setStreamVolume(AudioManager.STREAM_MUSIC,
-                        manager.getStreamMaxVolume(AudioManager.STREAM_MUSIC), 0);
+                oldVolume = manager.getStreamVolume(streamType);
+                // Keep the same baseline gain for the acoustic setup.
+                // VOICE_CALL is a controlled playback-output probe only.
+                if ("acoustic".equals(outputProfile))
+                    manager.setStreamVolume(streamType,
+                            manager.getStreamMaxVolume(streamType), 0);
             }
             pttAttempted = true;
             if (!radio.pttDown()) throw new IOException("PTT DOWN not acknowledged");
-            Thread.sleep(650);
-            if (closing.get()) throw new IOException("cancelled after PTT");
+            Log.i(TAG, "PTT_DOWN_CONFIRMED; start 1000 ms pre-playback settle");
+            awaitMicReady(); // deliberate ONE-SECOND pause AFTER key, BEFORE audio
+            Log.i(TAG, "PRE_PLAYBACK_SETTLE_COMPLETE; starting WAV");
             player.start();
             if (!done.await(Math.min(MAX_TX_MS + 3000, millis + 3000), TimeUnit.MILLISECONDS))
                 throw new IOException("playback timeout");
             if (audioError.get()) throw new IOException("audio playback failure");
             if (closing.get()) throw new IOException("cancelled during TX");
-            note = "local playback complete; RF audio NOT verified";
+            note = "route=" + outputProfile + "; local playback complete; decoded RF audio NOT verified";
             success = true;
         } catch (Exception error) {
             note = error.getClass().getSimpleName() + ": " + error.getMessage();
@@ -332,7 +369,7 @@ public final class VoiceTxBridge {
             }
             previousEnd = SystemClock.elapsedRealtime();
             if (manager != null && oldVolume >= 0) {
-                try { manager.setStreamVolume(AudioManager.STREAM_MUSIC, oldVolume, 0); }
+                try { manager.setStreamVolume(streamType, oldVolume, 0); }
                 catch (Exception error) { Log.w(TAG, "volume restoration failed", error); }
             }
             audit(r, SystemClock.elapsedRealtime()-began, success, note);
