@@ -8,7 +8,8 @@ import unittest
 import wave
 
 from analyze_dmr_voice import envelope, examine, centered_similarity
-from dmr_rx_capture import build_decoder_command, main as capture_main
+from dmr_rx_capture import (build_decoder_command, main as capture_main,
+                            rtl_dsp_tuning_plan, dmr_sync_summary)
 
 
 def write_pcm(path, rate=8000, seconds=1.0, samples=None):
@@ -35,6 +36,59 @@ class RxVoiceTests(unittest.TestCase):
         self.assertLess(cmd.index("-7"), cmd.index("-P"))
         self.assertIn("decoded_wavs", cmd[cmd.index("-7")+1])
         self.assertIn("-J", cmd)
+
+    def test_dsd_fme_252k_offset_does_not_change_desired_rf_channel(self):
+        plan = rtl_dsp_tuning_plan("446.00625", 12)
+        self.assertEqual(plan["dsp_target_hz"], 446006250)
+        self.assertEqual(plan["internal_center_offset_hz"], 252000)
+        self.assertEqual(plan["expected_rtl_center_hz"], 446258250)
+        self.assertEqual(plan["capture_sample_rate_hz"], 1008000)
+        # Users should NEVER compensate the internal tuner frequency manually.
+        mistaken = rtl_dsp_tuning_plan("445.75425", 12)
+        self.assertEqual(mistaken["expected_rtl_center_hz"], 446006250)
+        self.assertEqual(mistaken["dsp_target_hz"], 445754250)
+
+    def test_decoder_performs_internal_offset_automatically(self):
+        cmd = build_decoder_command("dsd-fme", "446.00625", 8, 0, 0,
+                                    Path("/tmp/test"))
+        self.assertEqual(cmd[cmd.index("-i") + 1],
+                         "rtl:0:446.00625M:8:0:12:0:2")
+        # The 446.25825 MHz RTL hardware tuning is the decoder's
+        # implementation detail, NOT a user-supplied channel setting.
+        self.assertNotIn("446.25825", " ".join(cmd))
+
+    def test_dmr_fallback_modes_and_bandwidth(self):
+        cmd = build_decoder_command("dsd-fme", "446.00625", 0, -2, 0,
+                                    Path("/tmp/test"), rtl_bw_khz=24,
+                                    decoder_mode="auto", invert_dmr=True,
+                                    rtl_volume=1)
+        self.assertIn("-fa", cmd)
+        self.assertNotIn("-fs", cmd)
+        self.assertIn("-xr", cmd)
+        self.assertEqual(cmd[cmd.index("-i") + 1],
+                         "rtl:0:446.00625M:0:-2:24:0:1")
+        with self.assertRaises(ValueError):
+            build_decoder_command("dsd-fme", "446.00625", 0, 0, 0,
+                                  Path("/tmp/test"), rtl_bw_khz=15)
+
+    def test_sync_summary_requires_explicit_dmr_sync(self):
+        candidate = dmr_sync_summary(
+            "RF activity detected\nTEMP wav created\nCenter Frequency: 446258250 Hz\n")
+        self.assertFalse(candidate["dmr_sync_observed"])
+        self.assertEqual(candidate["dmr_sync_count"], 0)
+        confirmed = dmr_sync_summary(
+            "Sync: +DMR [slot1]\nSync: -DMR [slot2]\n")
+        self.assertTrue(confirmed["dmr_sync_observed"])
+        self.assertEqual(confirmed["dmr_sync_count"], 2)
+
+    def test_tuning_plan_visible_in_receive_only_dry_run(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = capture_main(["--freq", "446.00625", "--dry-run"])
+        self.assertEqual(rc, 0)
+        self.assertIn('"expected_rtl_center_hz": 446258250', out.getvalue())
+        self.assertIn('"dsp_target_hz": 446006250', out.getvalue())
+        self.assertIn('"internal_center_offset_hz": 252000', out.getvalue())
 
     def test_optional_discriminator_wav_is_not_decoded_voice(self):
         cmd = build_decoder_command("dsd-fme", "446.00625", 8, 0, 0,
