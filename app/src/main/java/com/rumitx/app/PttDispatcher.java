@@ -10,6 +10,7 @@ public final class PttDispatcher {
  public PttDispatcher(Transport r,Listener l){radio=r;listener=l;}
  public synchronized void setTransmit(boolean down){
   if(down&&VoiceTxBridge.isTransmitting())return;
+  if(!down&&VoiceTxBridge.isTransmitting()&&!wanted)return;
   if(closed||(wanted==down&&down))return;
   wanted=down;
   worker.execute(() -> {
@@ -22,5 +23,5 @@ public final class PttDispatcher {
   });
  }
  public synchronized void execute(Runnable command){if(!closed)worker.execute(()->{if(!VoiceTxBridge.isTransmitting())command.run();});}
- public synchronized void close(Runnable disconnect){if(closed)return;wanted=false;closed=true;worker.execute(() -> {try{radio.up();}catch(RuntimeException ignored){}finally{disconnect.run();}});worker.shutdown();}
+ public synchronized void close(Runnable disconnect){if(closed)return;boolean hadManualPtt=wanted;wanted=false;closed=true;worker.execute(() -> {try{if(hadManualPtt||!VoiceTxBridge.isTransmitting())radio.up();}catch(RuntimeException ignored){}finally{disconnect.run();}});worker.shutdown();}
 }
