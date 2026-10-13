@@ -314,7 +314,7 @@ public class MainActivity extends Activity {
     }
     @Override protected void onPause(){
         statusUi.removeCallbacks(statusRefresh);
-        if(commands!=null&&radio.isKeyed())commands.setTransmit(false);
+        if(commands!=null&&radio.isKeyed()&&!VoiceTxBridge.isTransmitting())commands.setTransmit(false);
         super.onPause();
     }
 }
