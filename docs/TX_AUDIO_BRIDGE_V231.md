@@ -399,3 +399,39 @@ No physical DMR sync normally means tune/signal/demodulation must be
 checked BEFORE hypothesizing encryption or voice scrambling.
 The exact words cannot be verified until a separate RF receiver
 decodes actual speech samples. 44-byte WAVs contain no PCM speech.
+
+
+## Analog FM high-pitched whine: 40% gain mitigation and evidence capture
+
+Operator has confirmed intelligible analog FM TTS with a prominent
+high-pitched whine; matched DMR playback is clean. This PR now defaults
+analog FM stream volume to 40% instead of the former 100%; DMR
+playback and stock HIDL audio settings are not changed. The setting is
+reversible with:
+
+    bash tools/set_analog_fm_volume.sh 20
+    bash tools/set_analog_fm_volume.sh 40
+    bash tools/set_analog_fm_volume.sh 0
+    bash tools/set_analog_fm_volume.sh reset
+
+The 0% setting is a diagnostic to test whether a keyed FM transmitter
+whines even with the speaker muted. Invalid configuration fails before
+PTT. Previous volume is restored in the existing finally block.
+
+A receive-only RTL-SDR analog FM WAV collector plus dependency-free
+spectral detector are provided:
+
+    python3 tools/make_analog_fm_test_wavs.py
+    python3 tools/analog_fm_rx_capture.py --freq YOUR_AUTHORIZED_FM_MHZ --duration 25
+    python3 tools/analyze_analog_fm_whine.py PATH_TO_RECEIVED_FM_WAV --start 3 --duration 6
+
+Run the receive tool first, then issue a separately authorized signed
+analog TX_AUDIO message using silence.wav at 40%, again at 0%, and
+prepared speech at 40%. Listening to all three receiver recordings
+distinguishes playback-related overdrive from analog TX mic/modulator
+noise even when no Android PCM is audible. The whine is NOT declared
+fixed until an independently received analog FM sample demonstrates
+improvement at an intelligible speech level.
+
+Detailed procedure, expected outcomes, and safety gates:
+docs/ANALOG_FM_WHINE.md
