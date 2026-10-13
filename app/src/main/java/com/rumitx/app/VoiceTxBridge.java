@@ -526,8 +526,8 @@ public final class VoiceTxBridge {
                         "creation, prepare(), start(), and all stream volume changes");
             }
             if (rxRouteProbeRequested) {
-                // StockAudioRoute uses only its already-existing RX shutdown
-                // values. Do not alter speak_enable/HIDL ownership or DMR.
+                // StockAudioRoute changes ONLY SET_LOOPBACK_TYPE=3,3 -> 0.
+                // Mic gain, MIC_NUM, speak_enable/HIDL ownership and DMR stay put.
                 rxProbe = hidlRxProbeAdapter;
                 if (rxProbe == null ||
                         !rxProbe.suspendStockRxRouteForAnalogProbe())
@@ -591,20 +591,28 @@ public final class VoiceTxBridge {
                     Log.e(TAG, "Cannot restore prior channel", error);
                 }
             }
-            // Always restore the vendor RX audio route AFTER PTT release.
-            // Attempt restoration even if the diagnostic TX was cancelled.
+            // Restore the stock RX loopback only AFTER confirmed PTT UP.
+            // Never reactivate microphone monitoring while the radio reports
+            // that it is still keyed. If unkey fails, require operator recovery.
             if (rxRouteSuspended) {
-                try {
-                    boolean restored = rxProbe.restoreStockRxRouteAfterAnalogProbe();
-                    Log.w(TAG, "ANALOG_RX_ROUTE_PROBE_RESTORED invoked=" + restored);
-                    if (!restored) {
-                        success = false;
-                        note += "; stock RX route restoration failed; restart radio service";
-                    }
-                } catch (Exception restoreFailure) {
+                if (radio.isKeyed()) {
                     success = false;
-                    note += "; RX route restoration exception; restart radio service";
-                    Log.e(TAG, "ANALOG_RX_ROUTE_PROBE_RESTORE_FAILED", restoreFailure);
+                    note += "; CRITICAL: still keyed; loopback stays OFF; " +
+                            "unkey radio and restart radio service before RX";
+                    Log.e(TAG, "ANALOG_RX_ROUTE_PROBE_RESTORE_DEFERRED: radio still keyed");
+                } else {
+                    try {
+                        boolean restored = rxProbe.restoreStockRxRouteAfterAnalogProbe();
+                        Log.w(TAG, "ANALOG_RX_ROUTE_PROBE_RESTORED invoked=" + restored);
+                        if (!restored) {
+                            success = false;
+                            note += "; stock RX loopback restoration failed; restart radio service";
+                        }
+                    } catch (Exception restoreFailure) {
+                        success = false;
+                        note += "; RX loopback restoration exception; restart radio service";
+                        Log.e(TAG, "ANALOG_RX_ROUTE_PROBE_RESTORE_FAILED", restoreFailure);
+                    }
                 }
             }
             previousEnd = SystemClock.elapsedRealtime();
