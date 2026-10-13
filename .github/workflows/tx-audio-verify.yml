@@ -18,10 +18,12 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - name: Android SDK command line tools
-        uses: android-actions/setup-android@v3
-      - name: Install Android API 28
-        run: sdkmanager "platforms;android-28" "build-tools;33.0.2"
+      - name: Install Android API 28 using preinstalled SDK
+        run: |
+          echo "SDK=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-unset}}"
+          command -v sdkmanager
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platforms;android-28" "build-tools;33.0.2"
       - name: Gradle 7.5
         uses: gradle/actions/setup-gradle@v4
         with:
