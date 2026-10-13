@@ -37,9 +37,16 @@ All command extras are STRING fields:
   audio   absolute file under /data/user/0/com.rumitx.app/files/voice_bridge/audio/
   tx      MHz decimal; required
   rx      optional RX MHz (defaults TX)
-  digital optional, only 1 in this version
-  cc      optional 0-15, default 1
-  tg      optional 1-16777215, default 99
+  digital optional; 1 = DMR (default), 0 = analog narrowband FM simplex
+  cc      DMR only, 0-15 default 1; analog must be 0 (default for analog)
+  tg      DMR only, 1-16777215 default 99; analog must be 0 (default for analog)
+  rx      analog v1 must equal tx (simplex only; split analog unverified)
+
+Analog v1 channel settings are narrowband FM (gwb=0), no CTCSS/DCS
+tones (carrier squelch), and default squelch 4. Receivers with an active
+tone-squelch requirement will NOT open until tone support is added.
+Talkgroup/color code have NO analog meaning and are 0/0 only for
+backward-compatible signed V1 request fields.
 
 Authentication extras:
   issued  13-digit UTC epoch milliseconds, <=90-second clock skew
@@ -64,8 +71,13 @@ An explicit operator-controlled file allowed_channels.csv must list every
 allowed MHz,digital,color_code,talkgroup tuple, one per line, for example:
 
 YOUR_ALLOWED_MHZ,1,1,99
+# analog FM simplex without CTCSS/DCS, separate explicit opt-in:
+YOUR_ALLOWED_ANALOG_MHZ,0,0,0
 
 Only use real MHz values allowed for the operator, mode and service.
+Add actual numeric frequencies only after confirming service authorization;
+the literal placeholders above are not valid allowlist entries.
+An approved DMR frequency does not automatically authorize analog FM.
 No channel is enabled by default. Pair by running:
 bash tools/provision_tx_audio.sh
 
@@ -121,6 +133,48 @@ by the operator. MediaPlayer completion is NOT proof of intelligible DMR
 audio on the air. SET_LOOPBACK_TYPE is NOT modified or validated here.
 Use an authorized DMR listening receiver and record **decoded audio**
 in addition to RTL-SDR RF observations.
+
+## Analog FM TTS transmit (new v2.3.1 TX_AUDIO feature)
+
+**Source-grounded capability:** RadioController.programChannel() selects
+DMR007 command 68 35 for analog, 68 36 for digital. Channel.buildProgramFrame()
+already constructs the analog 68 35 payload (RX/TX frequency, bandwidth,
+squelch, CTCSS/DCS if separately configured). Existing PTT methods issue
+the same UART send-start and single-client native PTT helper commands.
+The bridge now selects analog when signed digital=0, rather than hard-
+coding DMR. The same MediaPlayer acoustic speaker->mic coupling and
+one-second pre-playback PTT settling are reused.
+
+**Not yet hardware-verified:** Existing Dmr007Frame source marks 68 35 analog
+programming as reverse-engineered but not validated live on the DOOGEE S80.
+Build success does NOT establish that analog audio is modulated, or that
+the existing radio pttDown() returns a sendstart ACK when analog is active.
+The first device test should validate 68 35 channel ACK, module PTT
+sendstart, actual analog FM RF, intelligible audio on a second analog
+receiver, and successful PTT release / former-channel restoration.
+
+The ThinkPad sender defaults to DMR for backward compatibility. For an
+authorized analog test channel configured in allowed_channels.csv:
+
+    python3 tools/tx_audio_client.py --wav prepared.wav --tx YOUR_ALLOWED_ANALOG_MHZ --mode analog
+    # With adequate independent FM monitoring and operator approval ONLY:
+    python3 tools/tx_audio_client.py --wav prepared.wav --tx YOUR_ALLOWED_ANALOG_MHZ --mode analog --adb
+
+The first line is a NO-RF dry run. The second may key RF. The sender
+HMAC-signs digital=0, cc=0, tg=0, then invokes the same TX_AUDIO intent.
+A raw adb broadcast with only digital=0 is NOT authenticated; the existing
+HMAC fields and allowlist are mandatory. Analog/split-frequency requests
+or analog CC/TG not 0/0 are rejected rather than guessed.
+
+The module's 68 35 frame uses gwb=0 for narrowband (reported ~12.5 kHz)
+and 0 for no tone. Receiver radios must have compatible analog FM
+frequency, bandwidth and open/carrier squelch. Repeater tones, split
+TX/RX, wideband mode, TX power selection and other analog features
+are deliberately OUT OF SCOPE for this safe first iteration.
+
+An operator's amateur license does not by itself permit transmission
+on every RF channel inside the hardware's 400-470 MHz range. Analog
+and digital emissions each need their own lawful authorization.
 
 ## Operator-confirmed transmit timing (2026-10-12)
 
@@ -226,9 +280,11 @@ parameter mapping and independent PTT watchdog validation.
 9. Prove acoustic audio works over-the-air with RTL-SDR V4. Report any
    failed or unverified conditions explicitly.
 
-A GitHub Actions workflow produces a *debug test build* only if CI passes.
-That artifact is not an installable upgrade to a differently-signed release.
-No on-device or RF validation has yet been performed here.
+A GitHub Actions workflow produces a *debug test build* and verified
+SHA256SUMS.txt on success. The CI artifact is not an installable upgrade
+to an app signed with another certificate. Prior DMR TX_AUDIO control
+sequence was validated on the S80 by the operator. Analog FM TX_AUDIO
+has NOT yet been tested on S80 hardware or independently RF verified.
 
 
 ## RTL-SDR V4: verify actual received DMR speech
