@@ -37,6 +37,9 @@ public final class VoiceTxBridge {
     // Operator-verified: key first, then allow ONE SECOND for the mic/TX
     // path to stabilize before playing the WAV. No post-playback delay.
     private static final long PRE_PLAYBACK_SETTLE_MS = 1000L;
+    // Laboratory-only analog FM PTT with NO MediaPlayer and NO stream mutation.
+    // The test is one-shot, exactly four seconds, signed and channel-allowlisted.
+    private static final int ANALOG_PTT_ONLY_HOLD_MS = 4000;
     private static final long CLOCK_SKEW_MS = 90000;
     private static final AtomicBoolean BUSY = new AtomicBoolean();
     private final AtomicBoolean closing = new AtomicBoolean();
@@ -292,6 +295,59 @@ public final class VoiceTxBridge {
         return Integer.parseInt(value);
     }
 
+    /**
+     * One-shot test: remove the app-side output stream from the FM TX chain.
+     *
+     * The caller still supplies an authenticated, SHA-checked, exactly 4s
+     * all-zero 16k PCM WAV. It is NEVER opened as a MediaPlayer and the
+     * AudioManager volume is NEVER read or changed in this diagnostic.
+     * The private mode file is consumed BEFORE RF channel programming.
+     *
+     * Do not expand this path to DMR. Never enable through unsigned
+     * broadcast extras: only trusted owner ADB access can opt in.
+     */
+    private boolean consumeAnalogPttOnlyDiagnostic(Request r, int wavMillis)
+            throws IOException {
+        if (!"0".equals(r.digital)) return false;
+        File mode = new File(root, "analog_tx_diagnostic_mode.txt");
+        if (!mode.isFile()) return false;
+        String selected = firstLine(mode);
+        if (!"ptt_only".equals(selected))
+            throw new IOException("invalid analog_tx_diagnostic_mode.txt; use ptt_only");
+        if (wavMillis != ANALOG_PTT_ONLY_HOLD_MS)
+            throw new IOException("ptt_only requires exactly 4 seconds of signed silence");
+        // validateWav() already verified canonical RIFF and SHA-256.
+        // Verify all PCM bytes are zero so a mistakenly configured voice
+        // request fails closed rather than being silently dropped.
+        try (RandomAccessFile source = new RandomAccessFile(r.file, "r")) {
+            source.seek(44);
+            byte[] block = new byte[4096];
+            int n;
+            while ((n = source.read(block)) != -1) {
+                for (int i = 0; i < n; i++)
+                    if (block[i] != 0)
+                        throw new IOException("ptt_only requires an all-zero PCM WAV");
+            }
+        }
+        // One-shot guard: if deletion fails, refuse to key the transmitter.
+        if (!mode.delete())
+            throw new IOException("could not consume one-shot diagnostic mode file");
+        Log.w(TAG, "ANALOG_PTT_ONLY_ARMED duration_ms=" +
+                ANALOG_PTT_ONLY_HOLD_MS + " no MediaPlayer, no volume change");
+        return true;
+    }
+
+    private void holdAnalogPttOnly() throws IOException, InterruptedException {
+        final long deadline = SystemClock.elapsedRealtime() + ANALOG_PTT_ONLY_HOLD_MS;
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (closing.get()) throw new IOException("diagnostic stopped during analog PTT");
+            if (!radio.isKeyed()) throw new IOException("radio unkeyed during analog diagnostic");
+            Thread.sleep(Math.min(50L, Math.max(1L, deadline - SystemClock.elapsedRealtime())));
+        }
+        if (closing.get() || !radio.isKeyed())
+            throw new IOException("analog diagnostic cancelled or unkeyed");
+    }
+
     private void awaitMicReady() throws IOException, InterruptedException {
         final long target = SystemClock.elapsedRealtime() + PRE_PLAYBACK_SETTLE_MS;
         while (SystemClock.elapsedRealtime() < target) {
@@ -315,6 +371,7 @@ public final class VoiceTxBridge {
         int streamType = AudioManager.STREAM_MUSIC;
         String outputProfile = "acoustic";
         int analogPercent = -1;
+        boolean pttOnlyDiagnostic = false;
         CountDownLatch done = new CountDownLatch(1);
         AtomicBoolean audioError = new AtomicBoolean();
         completion = done;
@@ -326,15 +383,23 @@ public final class VoiceTxBridge {
             if (radio == null || !radio.isConnected() || radio.isKeyed())
                 throw new IOException("radio unavailable or manually keyed");
             int millis = validateWav(r);
-            outputProfile = routeProfile();
-            // Resolve invalid settings BEFORE channel programming and PTT.
-            // Never apply attenuation to the proven DMR audio path.
-            if ("0".equals(r.digital))
-                analogPercent = analogPlaybackPercent();
-            streamType = "voice_call_probe".equals(outputProfile)
-                    ? AudioManager.STREAM_VOICE_CALL : AudioManager.STREAM_MUSIC;
-            Log.i(TAG, "AUDIO_ROUTE profile=" + outputProfile +
-                    " stream=" + streamType + " (HAL uplink NOT verified)");
+            pttOnlyDiagnostic = consumeAnalogPttOnlyDiagnostic(r, millis);
+            if (pttOnlyDiagnostic) {
+                // Do not even open MediaPlayer / change stream volume here.
+                outputProfile = "ptt_only_no_media_player";
+                Log.w(TAG, "ANALOG_TX_DIAGNOSTIC profile=ptt_only, " +
+                        "no Android audio playback/volume modification");
+            } else {
+                outputProfile = routeProfile();
+                // Resolve invalid settings BEFORE channel programming and PTT.
+                // Never apply attenuation to the proven DMR audio path.
+                if ("0".equals(r.digital))
+                    analogPercent = analogPlaybackPercent();
+                streamType = "voice_call_probe".equals(outputProfile)
+                        ? AudioManager.STREAM_VOICE_CALL : AudioManager.STREAM_MUSIC;
+                Log.i(TAG, "AUDIO_ROUTE profile=" + outputProfile +
+                        " stream=" + streamType + " (HAL uplink NOT verified)");
+            }
             previousChannel = radio.currentChannel();
             Channel ch = new Channel();
             ch.name = "Voice TX temporary";
@@ -362,51 +427,65 @@ public final class VoiceTxBridge {
             programmed = true;
             if (closing.get()) throw new IOException("cancelled before TX");
 
-            player = new MediaPlayer();
-            player.setAudioStreamType(streamType);
-            player.setDataSource(r.file.getAbsolutePath());
-            player.setOnCompletionListener(mp -> done.countDown());
-            player.setOnErrorListener((mp, what, extra) -> {
-                audioError.set(true);
-                done.countDown();
-                return true;
-            });
-            player.prepare();
-            if (manager != null) {
-                oldVolume = manager.getStreamVolume(streamType);
-                if ("0".equals(r.digital)) {
-                    // FM route was being driven at max volume; reduce amplifier
-                    // level while preserving the TTS samples/MediaPlayer gain.
-                    int max = manager.getStreamMaxVolume(streamType);
-                    int target = Math.max(0, Math.min(max,
-                            Math.round(max * analogPercent / 100.0f)));
-                    manager.setStreamVolume(streamType, target, 0);
-                    Log.i(TAG, "ANALOG_FM_GAIN percent=" + analogPercent +
-                            " stream=" + streamType + " volume=" + target +
-                            "/" + max + " (restore=" + oldVolume + ")");
-                } else if ("acoustic".equals(outputProfile)) {
-                    // Existing field-tested DMR baseline: unchanged.
-                    manager.setStreamVolume(streamType,
-                            manager.getStreamMaxVolume(streamType), 0);
+            if (!pttOnlyDiagnostic) {
+                player = new MediaPlayer();
+                player.setAudioStreamType(streamType);
+                player.setDataSource(r.file.getAbsolutePath());
+                player.setOnCompletionListener(mp -> done.countDown());
+                player.setOnErrorListener((mp, what, extra) -> {
+                    audioError.set(true);
+                    done.countDown();
+                    return true;
+                });
+                player.prepare();
+                if (manager != null) {
+                    oldVolume = manager.getStreamVolume(streamType);
+                    if ("0".equals(r.digital)) {
+                        // FM route was being driven at max volume; reduce amplifier
+                        // level while preserving the TTS samples/MediaPlayer gain.
+                        int max = manager.getStreamMaxVolume(streamType);
+                        int target = Math.max(0, Math.min(max,
+                                Math.round(max * analogPercent / 100.0f)));
+                        manager.setStreamVolume(streamType, target, 0);
+                        Log.i(TAG, "ANALOG_FM_GAIN percent=" + analogPercent +
+                                " stream=" + streamType + " volume=" + target +
+                                "/" + max + " (restore=" + oldVolume + ")");
+                    } else if ("acoustic".equals(outputProfile)) {
+                        // Existing field-tested DMR baseline: unchanged.
+                        manager.setStreamVolume(streamType,
+                                manager.getStreamMaxVolume(streamType), 0);
+                    }
+                } else if ("0".equals(r.digital)) {
+                    // Cannot apply gain reduction without an AudioManager.
+                    throw new IOException("AudioManager unavailable for analog gain control");
                 }
-            } else if ("0".equals(r.digital)) {
-                // Cannot apply gain reduction without an AudioManager.
-                throw new IOException("AudioManager unavailable for analog gain control");
+            } else {
+                Log.i(TAG, "ANALOG_PTT_ONLY_NO_AUDIO_ENGINE: skip MediaPlayer " +
+                        "creation, prepare(), start(), and all stream volume changes");
             }
             pttAttempted = true;
             if (!radio.pttDown()) throw new IOException("PTT DOWN not acknowledged");
             Log.i(TAG, "PTT_DOWN_CONFIRMED; start 1000 ms pre-playback settle");
-            awaitMicReady(); // deliberate ONE-SECOND pause AFTER key, BEFORE audio
-            Log.i(TAG, "PRE_PLAYBACK_SETTLE_COMPLETE; starting WAV");
-            player.start();
-            if (!done.await(Math.min(MAX_TX_MS + 3000, millis + 3000), TimeUnit.MILLISECONDS))
-                throw new IOException("playback timeout");
-            if (audioError.get()) throw new IOException("audio playback failure");
-            if (closing.get()) throw new IOException("cancelled during TX");
-            note = "mode=" + (r.digital.equals("1") ? "DMR" : "ANALOG_FM") +
-                    "; gain_pct=" + (analogPercent < 0 ? "baseline" : analogPercent) +
-                    "; route=" + outputProfile +
-                    "; local playback complete; received RF audio NOT verified";
+            awaitMicReady(); // deliberate ONE-SECOND pause AFTER key
+            if (pttOnlyDiagnostic) {
+                Log.w(TAG, "ANALOG_PTT_ONLY_START: 4000ms keyed hold, no WAV playback");
+                holdAnalogPttOnly();
+                Log.w(TAG, "ANALOG_PTT_ONLY_COMPLETE: no WAV playback attempted");
+                note = "mode=ANALOG_FM; diagnostic=ptt_only_no_media_player" +
+                        "; hold_ms=" + ANALOG_PTT_ONLY_HOLD_MS +
+                        "; no playback or stream gain changed; RF audio NOT verified";
+            } else {
+                Log.i(TAG, "PRE_PLAYBACK_SETTLE_COMPLETE; starting WAV");
+                player.start();
+                if (!done.await(Math.min(MAX_TX_MS + 3000, millis + 3000), TimeUnit.MILLISECONDS))
+                    throw new IOException("playback timeout");
+                if (audioError.get()) throw new IOException("audio playback failure");
+                if (closing.get()) throw new IOException("cancelled during TX");
+                note = "mode=" + (r.digital.equals("1") ? "DMR" : "ANALOG_FM") +
+                        "; gain_pct=" + (analogPercent < 0 ? "baseline" : analogPercent) +
+                        "; route=" + outputProfile +
+                        "; local playback complete; received RF audio NOT verified";
+            }
             success = true;
         } catch (Exception error) {
             note = error.getClass().getSimpleName() + ": " + error.getMessage();
