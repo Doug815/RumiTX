@@ -23,14 +23,14 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - name: Install Android API 28 using preinstalled SDK
+      - name: Install Android API 33 using preinstalled SDK
         run: |
           echo "SDK=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-unset}}"
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n1)"
           echo "Using $SDKMANAGER"
           test -x "$SDKMANAGER"
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-28" "build-tools;33.0.2"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-33" "build-tools;33.0.2"
       - name: Gradle 7.5
         uses: gradle/actions/setup-gradle@v4
         with:
