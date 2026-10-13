@@ -284,3 +284,62 @@ come from **acoustic** speaker-to-mic coupling. Direct digital audio
 injection requires additional isolated routing tests; the analyzer
 deliberately does not assert it. Use low RTL gain to avoid saturating
 the receiver front end with a nearby transmitting S80.
+
+
+## DSD-FME 252 kHz tuning and no-sync investigation — 2026-10-12
+
+**Observed:** TX_AUDIO worked on the S80 with STREAM_MUSIC and VOICE_CALL.
+RTL-SDR showed RF activity but DSD-FME did not report DMR sync and
+created 44-byte, empty TEMP WAV headers. Gain 20/40 did not help.
+
+**Critical finding — the +252 kHz offset is INTERNAL TO DSD-FME.**
+In rtl_sdr_fm.cpp, optimal_settings sets tuner center to the requested
+channel + capture_sample_rate/4; rtlsdr_callback digitally shifts IQ
+back to the requested RF channel. For 12/24 kHz bandwidth, the
+capture rate is 1,008,000 samples/sec and the offset +252,000 Hz.
+It is DC-spike avoidance, not a receiver frequency error.
+
+For a station physically transmitting on 446.00625 MHz:
+- Correct receiver channel argument: 446.00625M
+- Expected RTL hardware tuner center: 446.25825 MHz
+- WRONG manually compensated argument: 445.75425M; DSD-FME would
+  digitally demodulate 445.75425 MHz rather than the actual channel.
+
+Upstream: https://github.com/lwvmobile/dsd-fme/blob/audio_work/src/rtl_sdr_fm.cpp
+
+The capture tool now reports RF target and expected RTL center
+separately and parses explicit DMR sync messages. RF activity or
+a 44-byte WAV is not evidence of successfully decoded DMR traffic.
+
+### Receive-only baseline (does not key the phone)
+
+    python3 tools/dmr_rx_capture.py --freq 446.00625 --gain 8 --rtl-bw-khz 12 --duration 40 --save-demod
+
+Use your actual authorized RF test frequency and transmit separately
+only as needed. Save a discriminator WAV for offline decoder replay.
+
+### If DMR sync is still absent
+
+1. Verify session.json requests actual RF frequency and that the
+   DSD-FME tuner log prints that frequency plus the internal offset.
+2. Check the RF waterfall for DMR 4FSK-modulated bursts, rather than
+   assuming every keyed RF carrier contains standard DMR data.
+3. Decrease RTL gain (try --gain 0 automatic or --gain 8) or separate
+   transmitter/SDR antennas to avoid RF front-end overload. Gain
+   20/40 can make saturation worse, not better.
+4. Test reverse DMR polarity as an isolated comparison:
+
+    python3 tools/dmr_rx_capture.py --freq 446.00625 --gain 8 --invert-dmr --duration 40 --save-demod
+
+5. Change ONLY ONE variable at a time to compare --decoder-mode auto
+   (DSD-FME -fa), --rtl-bw-khz 24 or --rtl-volume 1.
+6. Decode a known-good unencrypted DMR signal on the same SDR and
+   decoder setup before concluding the S80's framing is non-standard.
+7. If a reference DMR signal syncs but the S80 never does, investigate
+   the DMR007 module's actual transmitted modulation, channel mode,
+   symbol timing and HIDL/PTT TX status rather than focusing on speakers.
+
+No physical DMR sync normally means tune/signal/demodulation must be
+checked BEFORE hypothesizing encryption or voice scrambling.
+The exact words cannot be verified until a separate RF receiver
+decodes actual speech samples. 44-byte WAVs contain no PCM speech.
