@@ -27,19 +27,26 @@ DSD_REFERENCE = "https://github.com/lwvmobile/dsd-fme/blob/audio_work/examples/c
 
 
 def build_decoder_command(program: str, freq: str, gain: int, ppm: int,
-                          device: int, output: Path) -> list[str]:
+                          device: int, output: Path, save_demod: bool = False) -> list[str]:
     validate_mhz(freq)
     if not 0 <= gain <= 49 or not -100 <= ppm <= 100 or device < 0:
         raise ValueError("decoder device/gain/ppm outside supported range")
     audio = output / "decoded_wavs"
     events = output / "dmr_events.log"
-    return [
+    command = [
         program, "-fs",                         # DMR BS/MS simplex decoding
         "-i", f"rtl:{device}:{freq}M:{gain}:{ppm}:12:0:2",
         "-o", "null",                           # audio saved to WAV, not speakers
+    ]
+    if save_demod:
+        # 48k discriminator audio, NOT decoded speech and NOT raw IQ.
+        # Reprocess it offline with: dsd-fme -fs -i file.wav -o null ...
+        command += ["-6", str(output / "dmr_discriminator_48k.wav")]
+    command += [
         "-7", str(audio), "-P",                 # per-call decoded audio WAVs
         "-J", str(events),
     ]
+    return command
 
 
 def make_sender_command(wav: Path, freq: str, cc: int, tg: int,
@@ -71,6 +78,8 @@ def parser_for_tests() -> argparse.ArgumentParser:
     p.add_argument("--ppm", type=int, default=0, help="RTL tuner PPM calibration")
     p.add_argument("--device", type=int, default=0, help="RTL SDR device index")
     p.add_argument("--decoder", default="dsd-fme", help="DSD-FME executable")
+    p.add_argument("--save-demod", action="store_true",
+                   help="also record 48 kHz FM discriminator WAV for offline DMR replay")
     p.add_argument("--output", type=Path,
                    help="directory for decoded voice, logs and JSON report")
     p.add_argument("--reference", type=Path,
@@ -128,7 +137,8 @@ def execute(args: argparse.Namespace) -> int:
         if directory.exists() and any(directory.iterdir()):
             raise ValueError("output directory must be new or empty")
         command = build_decoder_command(args.decoder, freq, args.gain,
-                                        args.ppm, args.device, directory)
+                                        args.ppm, args.device, directory,
+                                        save_demod=args.save_demod)
     except (OSError, ValueError) as error:
         print(f"Configuration error: {error}", file=sys.stderr)
         return 2
@@ -140,6 +150,7 @@ def execute(args: argparse.Namespace) -> int:
         "sender_command": (["[signed TX_AUDIO request via ADB; key redacted]"]
                            if sender else None),
         "decoder_reference": DSD_REFERENCE,
+        "demodulated_48khz_capture": args.save_demod,
         "note": "no radio transmission in default receive-only mode"
     }
     if args.dry_run:
@@ -205,7 +216,9 @@ def execute(args: argparse.Namespace) -> int:
         "decoder_console_log": str(log_file),
         "event_log": str(directory/"dmr_events.log"),
         "sender": send_result,
-        "note": "Assessment is receiver-side voice evidence, not a verification of direct digital TX injection."
+        "note": "Assessment is receiver-side voice evidence, not a verification of direct digital TX injection.",
+        "discriminator_capture": (str(directory/"dmr_discriminator_48k.wav")
+                                 if args.save_demod else None)
     })
     (directory/"report.json").write_text(json.dumps(report, indent=2)+"\n")
     print(json.dumps({"report": str(directory/"report.json"),
