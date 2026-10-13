@@ -170,6 +170,7 @@ public class MainActivity extends Activity {
         //   --es digital "1" --es cc "1" --es tg "1" [--es activate "1"]
         programReceiver=new BroadcastReceiver() {
             @Override public void onReceive(Context ctx, Intent intent) {
+                if(VoiceTxBridge.isTransmitting()){RadioLog.i("RumiTX-TX","Remote PROGRAM_CHANNEL deferred: voice TX active");return;}
                 try {
                     Channel ch = new Channel();
                     ch.name = intent.getStringExtra("name");
@@ -302,6 +303,7 @@ public class MainActivity extends Activity {
 
     /** Activate a channel: program TX/RX frequencies, tones, DMR settings. */
     private void activateChannel(Channel ch) {
+        if(VoiceTxBridge.isTransmitting()){showToast("Voice TX in progress");return;}
         String gate=com.rumitx.app.repeaters.RepeaterProfiles.blockedChannel(ch);
         if(gate!=null){showToast(gate);return;}
         commands.execute(() -> {
