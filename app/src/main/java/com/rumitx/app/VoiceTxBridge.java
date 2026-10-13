@@ -243,6 +243,8 @@ public final class VoiceTxBridge {
 
     private void transmitExclusive(Request r) {
         boolean pttAttempted = false;
+        boolean programmed = false;
+        Channel previousChannel = null;
         boolean success = false;
         String note = "not started";
         MediaPlayer player = null;
@@ -259,6 +261,7 @@ public final class VoiceTxBridge {
             if (radio == null || !radio.isConnected() || radio.isKeyed())
                 throw new IOException("radio unavailable or manually keyed");
             int millis = validateWav(r);
+            previousChannel = radio.currentChannel();
             Channel ch = new Channel();
             ch.name = "Voice TX temporary";
             ch.txFreqMHz = r.txMHz;
@@ -267,6 +270,7 @@ public final class VoiceTxBridge {
             ch.colorCode = r.colorCode;
             ch.talkgroup = r.talkgroup;
             if (!radio.programChannel(ch)) throw new IOException("channel programming failed");
+            programmed = true;
             if (closing.get()) throw new IOException("cancelled before TX");
 
             player = new MediaPlayer();
@@ -310,6 +314,20 @@ public final class VoiceTxBridge {
                     success = false;
                     note += "; CRITICAL: PTT release not acknowledged";
                     Log.e(TAG, "CRITICAL PTT RELEASE FAILURE: check helper watchdog");
+                }
+            }
+            // TX_AUDIO must not permanently replace the operator's selected channel.
+            // Restore only after PTT is confirmed released; never retune an active TX.
+            if (programmed && previousChannel != null && radio.isConnected() && !radio.isKeyed()) {
+                try {
+                    if (!radio.programChannel(previousChannel)) {
+                        success = false;
+                        note += "; prior channel restoration failed";
+                    }
+                } catch (Exception error) {
+                    success = false;
+                    note += "; channel restore exception: " + error.getClass().getSimpleName();
+                    Log.e(TAG, "Cannot restore prior channel", error);
                 }
             }
             previousEnd = SystemClock.elapsedRealtime();
