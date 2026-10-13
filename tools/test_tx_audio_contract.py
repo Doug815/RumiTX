@@ -58,9 +58,22 @@ class BridgeContractTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 make_request(wav, "446.00625", "446.00625", 1, 99,
                              key, path, digital="0")
+            split = make_request(wav, "446.00625", "446.10625", 0, 0, key, path, digital="0")
+            self.assertEqual(split["rx"], "446.10625")
+            toned = make_request(wav, "446.00625", "446.00625", 0, 0, key, path,
+                                 digital="0", tone="100.0 (13)")
+            self.assertTrue(canonical(toned).startswith(b"TX_AUDIO_V2\n"))
+            signed = toned["mac"]
+            toned["tone"] = "103.5"
+            self.assertNotEqual(hmac.new(bytes.fromhex(key), canonical(toned), hashlib.sha256).hexdigest(), signed)
+            toned["tone"] = "100.0 (13)"
+            toned["tone_source"] = "software"
+            self.assertNotEqual(hmac.new(bytes.fromhex(key), canonical(toned), hashlib.sha256).hexdigest(), signed)
+            for tone in ["NaN", "100.0 (12)", "100.1", "100", "100.0\n103.5"]:
+                with self.assertRaises(ValueError):
+                    make_request(wav, "446.00625", "446.00625", 0, 0, key, path, digital="0", tone=tone)
             with self.assertRaises(ValueError):
-                make_request(wav, "446.00625", "446.10625", 0, 0,
-                             key, path, digital="0")
+                make_request(wav, "446.00625", "446.00625", 1, 99, key, path, tone="100.0")
             # Digital requests retain their established defaults/format.
             dmr = make_request(wav, "446.00625", "446.00625",
                                1, 99, key, path)
@@ -74,7 +87,7 @@ class BridgeContractTests(unittest.TestCase):
         self.assertIn('if (r.colorCode != 0 || r.talkgroup != 0)', bridge)
         self.assertIn('if (!r.digital.equals("0") && !r.digital.equals("1"))', bridge)
         self.assertIn('ch.bandwidthKhz = 12;', bridge)
-        self.assertIn('ch.txCtcssHz = 0;', bridge)
+        self.assertIn('r.toneSource.equals("module") ? r.toneHz : 0;', bridge)
         self.assertIn('ch.rxCtcssHz = 0;', bridge)
         self.assertIn('ch.txDcsCode = null;', bridge)
         self.assertIn('ch.rxDcsCode = null;', bridge)

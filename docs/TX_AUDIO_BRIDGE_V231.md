@@ -435,3 +435,21 @@ improvement at an intelligible speech level.
 
 Detailed procedure, expected outcomes, and safety gates:
 docs/ANALOG_FM_WHINE.md
+
+
+## Experimental signed CTCSS extension (20301036)
+
+Existing no-tone V1 requests remain unchanged. A request containing `tone`
+uses `TX_AUDIO_V2` and signs all nine V1 fields followed by the exact `tone`
+and `tone_source` strings, each separated by a newline. Default source is
+`module`; `software` mixes a continuous 15% sine with 75% speech into a
+temporary WAV, preserving the original signed file. Only one generator
+is enabled. DMR tone requests, hidden CTCSS/DCS overrides, unsupported
+frequencies, and mismatched module indices are rejected before PTT.
+
+Example: `--mode analog --tone '100.0 (13)' --tone-source module`.
+`--tone-source software` selects in-app waveform generation. Split TX/RX
+is expressible in the existing analog frame, but repeater operation has
+NOT been verified. On-phone RF tests did not detect a usable 100 Hz tone
+from either source. Do not deploy this as a repeater-capable release.
+20301034 was restored after testing; channels and settings retained.

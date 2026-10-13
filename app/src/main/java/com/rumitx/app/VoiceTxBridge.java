@@ -166,6 +166,23 @@ public final class VoiceTxBridge {
         r.tx = required(i, "tx");
         r.rx = optional(i, "rx", r.tx);
         r.digital = optional(i, "digital", "1");
+        r.tone = i.hasExtra("tone") ? required(i, "tone") : null;
+        r.toneSource = optional(i, "tone_source", "module");
+        if (i.hasExtra("tone_source") && r.tone == null)
+            throw new SecurityException("tone_source requires a signed tone");
+        for (String field : new String[]{"txCtcssHz", "rxCtcssHz", "txDcsCode", "rxDcsCode", "ctcss", "dcs", "tone_index"})
+            if (i.hasExtra(field)) throw new SecurityException("conflicting tone field: " + field + "; use signed tone only");
+        if (r.tone != null) {
+            if (!"0".equals(r.digital)) throw new SecurityException("CTCSS tone is analog-only");
+            if (!r.toneSource.equals("module") && !r.toneSource.equals("software"))
+                throw new SecurityException("tone_source must be module or software");
+            java.util.regex.Matcher toneMatch = java.util.regex.Pattern.compile("([0-9]{2,3}\\.[0-9])(?: \\(([0-9]{1,2})\\))?").matcher(r.tone);
+            if (!toneMatch.matches()) throw new SecurityException("tone must be Hz, e.g. 100.0 or 100.0 (13)");
+            r.toneHz = Double.parseDouble(toneMatch.group(1));
+            int index = ToneIndex.ctcss(r.toneHz);
+            if (index == 0 || (toneMatch.group(2) != null && Integer.parseInt(toneMatch.group(2)) != index))
+                throw new SecurityException("CTCSS frequency/module index conflict");
+        }
         // Unspecified DMR metadata defaults to 0/0 for analog FM.
         // The values remain part of the existing HMAC V1 signed payload.
         r.cc = optional(i, "cc", "0".equals(r.digital) ? "0" : "1");
@@ -195,8 +212,7 @@ public final class VoiceTxBridge {
             // Reject hidden DMR settings instead of silently misapplying them.
             if (r.colorCode != 0 || r.talkgroup != 0)
                 throw new SecurityException("analog FM requires cc=0 and tg=0");
-            if (Math.abs(r.txMHz - r.rxMHz) > 0.000001)
-                throw new SecurityException("analog split TX/RX not verified; simplex only");
+            // The 68 35 frame carries independent TX/RX; restore the previous channel after TX.
         }
 
         File path = new File(r.audio).getCanonicalFile();
@@ -212,6 +228,8 @@ public final class VoiceTxBridge {
             throw new SecurityException("invalid provisioned TX key");
         String canonical = String.join("\n", "TX_AUDIO_V1", r.audio, r.tx, r.rx,
                 r.digital, r.cc, r.tg, r.issued, r.nonce, r.sha);
+        if (r.tone != null)
+            canonical = canonical.replaceFirst("TX_AUDIO_V1", "TX_AUDIO_V2") + "\n" + r.tone + "\n" + r.toneSource;
         Mac hmac = Mac.getInstance("HmacSHA256");
         hmac.init(new SecretKeySpec(decodeHex(keyHex), "HmacSHA256"));
         if (!MessageDigest.isEqual(hmac.doFinal(canonical.getBytes(StandardCharsets.UTF_8)),
@@ -397,6 +415,7 @@ public final class VoiceTxBridge {
         boolean success = false;
         String note = "not started";
         MediaPlayer player = null;
+        File mixedAudio = null;
         AudioManager manager = (AudioManager)app.getSystemService(Context.AUDIO_SERVICE);
         int oldVolume = -1;
         int streamType = AudioManager.STREAM_MUSIC;
@@ -419,6 +438,14 @@ public final class VoiceTxBridge {
             int millis = validateWav(r);
             pttOnlyDiagnostic = consumeAnalogPttOnlyDiagnostic(r, millis);
             rxRouteProbeRequested = consumeAnalogRxRouteProbe(r, pttOnlyDiagnostic);
+            if (pttOnlyDiagnostic && r.tone != null)
+                throw new IOException("PTT-only diagnostic conflicts with CTCSS");
+            File playback = r.file;
+            if (r.tone != null && r.toneSource.equals("software")) {
+                mixedAudio = File.createTempFile("ctcss-", ".wav", root);
+                CtcssAudio.mix(r.file, mixedAudio, r.toneHz);
+                playback = mixedAudio;
+            }
             if (pttOnlyDiagnostic) {
                 // Do not even open MediaPlayer / change stream volume here.
                 outputProfile = "ptt_only_no_media_player";
@@ -448,14 +475,14 @@ public final class VoiceTxBridge {
                 // Channel.buildProgramFrame() selects DMR007 68 35 analog FM.
                 // No tones means ordinary analog radios can receive in CSQ.
                 ch.bandwidthKhz = 12;  // narrowband: 68 35 gwb=0
-                ch.txCtcssHz = 0;
+                ch.txCtcssHz = r.tone != null && r.toneSource.equals("module") ? r.toneHz : 0;
                 ch.rxCtcssHz = 0;
                 ch.txDcsCode = null;
                 ch.rxDcsCode = null;
                 ch.squelchLevel = 4;
             }
             Log.i(TAG, "TX_AUDIO mode=" + (ch.isDigital ? "DMR" : "ANALOG_FM") +
-                    " tx=" + r.tx + " rx=" + r.rx);
+                    " tx=" + r.tx + " rx=" + r.rx + " tone=" + r.tone + " source=" + r.toneSource);
             if (!radio.programChannel(ch))
                 throw new IOException((ch.isDigital ? "DMR" : "analog FM") +
                         " channel programming failed; no PTT issued");
@@ -465,7 +492,7 @@ public final class VoiceTxBridge {
             if (!pttOnlyDiagnostic) {
                 player = new MediaPlayer();
                 player.setAudioStreamType(streamType);
-                player.setDataSource(r.file.getAbsolutePath());
+                player.setDataSource(playback.getAbsolutePath());
                 player.setOnCompletionListener(mp -> done.countDown());
                 player.setOnErrorListener((mp, what, extra) -> {
                     audioError.set(true);
@@ -587,6 +614,7 @@ public final class VoiceTxBridge {
             }
             audit(r, SystemClock.elapsedRealtime()-began, success, note);
             reply(success, note, r.tx, r.sha);
+            if (mixedAudio != null && !mixedAudio.delete()) Log.w(TAG, "Cannot remove temporary CTCSS WAV");
             completion = null;
             BUSY.set(false);
         }
@@ -631,8 +659,8 @@ public final class VoiceTxBridge {
     }
 
     private static final class Request {
-        String audio, tx, rx, digital, cc, tg, issued, nonce, sha;
-        double txMHz, rxMHz;
+        String audio, tx, rx, digital, cc, tg, issued, nonce, sha, tone, toneSource;
+        double txMHz, rxMHz, toneHz;
         int colorCode, talkgroup;
         File file;
     }

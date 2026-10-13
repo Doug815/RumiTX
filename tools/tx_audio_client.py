@@ -11,6 +11,7 @@ import hmac
 from pathlib import Path
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -22,7 +23,11 @@ FIELDS = ("audio", "tx", "rx", "digital", "cc", "tg", "issued", "nonce", "sha256
 
 
 def canonical(data):
-    return "\n".join(["TX_AUDIO_V1"] + [data[k] for k in FIELDS]).encode("utf-8")
+    version = "TX_AUDIO_V2" if "tone" in data else "TX_AUDIO_V1"
+    values = [data[k] for k in FIELDS]
+    if "tone" in data:
+        values += [data["tone"], data["tone_source"]]
+    return "\n".join([version] + values).encode("utf-8")
 
 
 def validate_mhz(value):
@@ -48,7 +53,7 @@ def sha_wav(path):
     return hashlib.sha256(payload).hexdigest()
 
 
-def make_request(wav, tx, rx, cc, tg, key, staged_path, digital="1"):
+def make_request(wav, tx, rx, cc, tg, key, staged_path, digital="1", tone=None, tone_source="module"):
     if digital not in ("0", "1"):
         raise ValueError("digital must be 0 (analog FM) or 1 (DMR)")
     tx = validate_mhz(tx)
@@ -56,14 +61,26 @@ def make_request(wav, tx, rx, cc, tg, key, staged_path, digital="1"):
     if digital == "0":
         if cc != 0 or tg != 0:
             raise ValueError("analog FM requires cc=0 tg=0")
-        if abs(float(tx) - float(rx)) > 0.000001:
-            raise ValueError("analog FM v1 supports simplex only")
+
     elif not (0 <= cc <= 15 and 1 <= tg <= 16777215):
         raise ValueError("DMR color code or talkgroup out of range")
     fields = dict(audio=staged_path, tx=tx,
                   rx=rx, digital=digital, cc=str(cc), tg=str(tg),
                   issued=str(int(time.time() * 1000)),
                   nonce=secrets.token_hex(16), sha256=sha_wav(wav))
+    if tone is not None:
+        if digital != "0":
+            raise ValueError("CTCSS tone is analog-only")
+        if tone_source not in ("module", "software"):
+            raise ValueError("tone source must be module or software")
+        match = re.fullmatch(r"([0-9]{2,3}\.[0-9])(?: \(([0-9]{1,2})\))?", tone)
+        if not match:
+            raise ValueError("tone must be Hz, e.g. 100.0 or 100.0 (13)")
+        tones = (67.0,69.3,71.9,74.4,77.0,79.7,82.5,85.4,88.5,91.5,94.8,97.4,100.0,103.5,107.2,110.9,114.8,118.8,123.0,127.3,131.8,136.5,141.3,146.2,151.4,156.7,159.8,162.2,165.5,167.9,171.3,173.8,177.3,179.9,183.5,186.2,189.9,192.8,196.6,199.5,203.5,206.5,210.7,218.1,225.7,229.1,233.6,241.8,250.3,254.1)
+        hz = float(match[1])
+        if hz not in tones or (match[2] is not None and int(match[2]) != tones.index(hz) + 1):
+            raise ValueError("CTCSS frequency/module index conflict or unsupported frequency")
+        fields.update(tone=tone, tone_source=tone_source)
     fields["mac"] = hmac.new(bytes.fromhex(key), canonical(fields),
                              hashlib.sha256).hexdigest()
     return fields
@@ -76,16 +93,18 @@ def shell(*args, input_bytes=None):
 def send_adb(wav, fields):
     base = PREFIX
     staged = fields["audio"]
-    shell("adb", "shell", "su", "-c", f"mkdir -p {base}/audio")
+    shell("adb", "shell", "su -c " + shlex.quote(f"mkdir -p {base}/audio"))
     uid = subprocess.check_output(
-        ["adb", "shell", "su", "-c", f"stat -c %u {base}"], text=True).strip()
-    shell("adb", "shell", "-T", "su", "-c",
-          f"cat > {staged}; chmod 600 {staged}; chown {uid}:{uid} {staged}",
-          input_bytes=wav.read_bytes())
+        ["adb", "shell", "su -c " + shlex.quote(f"stat -c %u {base}")], text=True).strip()
+    if not uid.isdecimal() or not re.fullmatch(re.escape(PREFIX) + r"/audio/[0-9a-f]+\.wav", staged):
+        raise ValueError("unsafe staging path or owner")
+    command = f"set -e; cat > {staged}; chmod 600 {staged}; chown {uid}:{uid} {staged}; restorecon {staged}"
+    shell("adb", "shell", "-T", "su -c " + shlex.quote(command), input_bytes=wav.read_bytes())
     args = ["adb", "shell", "am", "broadcast", "-a", ACTION]
-    for name in FIELDS + ("mac",):
+    for name in FIELDS + (("tone", "tone_source") if "tone" in fields else ()) + ("mac",):
         args += ["--es", name, fields[name]]
-    shell(*args)
+    # Quote the whole remote command: tone convention contains spaces and parentheses.
+    shell("adb", "shell", shlex.join(args[2:]))
     print("Request dispatched; inspect: adb logcat -s RumiTX-TX:I")
     print("A local success is NOT an RF-audio verification.")
 
@@ -96,7 +115,10 @@ def main():
     parser.add_argument("--tx", required=True)
     parser.add_argument("--rx")
     parser.add_argument("--mode", choices=("dmr", "analog"), default="dmr",
-                        help="DMR digital (default), or narrowband analog FM simplex, no TX tone")
+                        help="DMR digital (default), or narrowband analog FM")
+    parser.add_argument("--tone", help="analog CTCSS Hz, e.g. 100.0 or '100.0 (13)'")
+    parser.add_argument("--tone-source", choices=("module", "software"), default=None,
+                        help="module generator (default) or in-app sine/voice mixer")
     parser.add_argument("--cc", type=int,
                         help="DMR color code (default 1); analog FM must use 0")
     parser.add_argument("--tg", type=int,
@@ -113,16 +135,17 @@ def main():
     if digital == "0":
         if cc != 0 or tg != 0:
             parser.error("analog FM requires cc=0 and tg=0; DMR fields do not apply")
-        if args.rx is not None and abs(float(validate_mhz(args.rx)) - float(validate_mhz(args.tx))) > 0.000001:
-            parser.error("analog FM v1 supports simplex only")
     elif not 0 <= cc <= 15 or not 1 <= tg <= 16777215:
         parser.error("DMR CC or talkgroup out of range")
+    if args.tone_source is not None and args.tone is None:
+        parser.error("--tone-source requires --tone")
     secret = args.key.read_text().strip()
     if not re.fullmatch(r"[a-fA-F0-9]{64}", secret):
         parser.error("key must be 32 random bytes encoded as 64 hex characters")
     staged = f"{PREFIX}/audio/{secrets.token_hex(12)}.wav"
     fields = make_request(args.wav, args.tx, args.rx or args.tx,
-                          cc, tg, secret, staged, digital=digital)
+                          cc, tg, secret, staged, digital=digital, tone=args.tone,
+                          tone_source=args.tone_source or "module")
     if args.adb:
         send_adb(args.wav, fields)
     else:
