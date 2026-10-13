@@ -72,14 +72,14 @@ jobs:
             echo ''
             echo 'Artifact includes **APK**, **SHA256SUMS.txt**, and **BUILD_INFO.txt**.'
             echo ''
-            echo '\`\`\`text'
+            echo '```text'
             cat ci-artifacts/SHA256SUMS.txt
-            echo '\`\`\`'
+            echo '```'
             echo ''
             echo 'Verify after extracting the GitHub Actions artifact:'
-            echo '\`\`\`bash'
+            echo '```bash'
             echo 'sha256sum -c SHA256SUMS.txt'
-            echo '\`\`\`'
+            echo '```'
             echo ''
             echo '**Signing gate:** the original v2.3.1 release signing certificate is required for an in-place update. Do not uninstall the existing app or sideload this debug APK over it.'
           } >> "${GITHUB_STEP_SUMMARY}"
