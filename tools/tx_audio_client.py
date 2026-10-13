@@ -48,9 +48,20 @@ def sha_wav(path):
     return hashlib.sha256(payload).hexdigest()
 
 
-def make_request(wav, tx, rx, cc, tg, key, staged_path):
-    fields = dict(audio=staged_path, tx=validate_mhz(tx),
-                  rx=validate_mhz(rx), digital="1", cc=str(cc), tg=str(tg),
+def make_request(wav, tx, rx, cc, tg, key, staged_path, digital="1"):
+    if digital not in ("0", "1"):
+        raise ValueError("digital must be 0 (analog FM) or 1 (DMR)")
+    tx = validate_mhz(tx)
+    rx = validate_mhz(rx)
+    if digital == "0":
+        if cc != 0 or tg != 0:
+            raise ValueError("analog FM requires cc=0 tg=0")
+        if abs(float(tx) - float(rx)) > 0.000001:
+            raise ValueError("analog FM v1 supports simplex only")
+    elif not (0 <= cc <= 15 and 1 <= tg <= 16777215):
+        raise ValueError("DMR color code or talkgroup out of range")
+    fields = dict(audio=staged_path, tx=tx,
+                  rx=rx, digital=digital, cc=str(cc), tg=str(tg),
                   issued=str(int(time.time() * 1000)),
                   nonce=secrets.token_hex(16), sha256=sha_wav(wav))
     fields["mac"] = hmac.new(bytes.fromhex(key), canonical(fields),
@@ -84,26 +95,39 @@ def main():
     parser.add_argument("--wav", required=True, type=Path)
     parser.add_argument("--tx", required=True)
     parser.add_argument("--rx")
-    parser.add_argument("--cc", type=int, default=1)
-    parser.add_argument("--tg", type=int, default=99)
+    parser.add_argument("--mode", choices=("dmr", "analog"), default="dmr",
+                        help="DMR digital (default), or narrowband analog FM simplex, no TX tone")
+    parser.add_argument("--cc", type=int,
+                        help="DMR color code (default 1); analog FM must use 0")
+    parser.add_argument("--tg", type=int,
+                        help="DMR talkgroup (default 99); analog FM must use 0")
     parser.add_argument("--key", type=Path, default=Path("tx_audio.key"))
     parser.add_argument("--adb", action="store_true",
                         help="LIVE RF REQUEST: only use on operator-authorized channels")
     args = parser.parse_args()
     if not args.wav.is_file() or not args.key.is_file():
         parser.error("WAV or key file missing")
-    if not 0 <= args.cc <= 15 or not 1 <= args.tg <= 16777215:
-        parser.error("CC or talkgroup out of range")
+    digital = "0" if args.mode == "analog" else "1"
+    cc = args.cc if args.cc is not None else (0 if digital == "0" else 1)
+    tg = args.tg if args.tg is not None else (0 if digital == "0" else 99)
+    if digital == "0":
+        if cc != 0 or tg != 0:
+            parser.error("analog FM requires cc=0 and tg=0; DMR fields do not apply")
+        if args.rx is not None and abs(float(validate_mhz(args.rx)) - float(validate_mhz(args.tx))) > 0.000001:
+            parser.error("analog FM v1 supports simplex only")
+    elif not 0 <= cc <= 15 or not 1 <= tg <= 16777215:
+        parser.error("DMR CC or talkgroup out of range")
     secret = args.key.read_text().strip()
     if not re.fullmatch(r"[a-fA-F0-9]{64}", secret):
         parser.error("key must be 32 random bytes encoded as 64 hex characters")
     staged = f"{PREFIX}/audio/{secrets.token_hex(12)}.wav"
     fields = make_request(args.wav, args.tx, args.rx or args.tx,
-                          args.cc, args.tg, secret, staged)
+                          cc, tg, secret, staged, digital=digital)
     if args.adb:
         send_adb(args.wav, fields)
     else:
         print("DRY RUN: no broadcast, no RF transmission")
+        print("Mode:", args.mode)
         print("TX MHz:", fields["tx"])
         print("WAV SHA256:", fields["sha256"])
         print("Nonce:", fields["nonce"])
