@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""Receive and record DMR voice on a ThinkPad with RTL-SDR V4 + DSD-FME.
+
+LISTEN-ONLY by default. Live TX requires both --send and --ack-authorized,
+and still passes through TX_AUDIO's signed client and device allowlist.
+Never opens, programs, or modifies the S80's radio transport itself.
+"""
+from __future__ import annotations
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+from analyze_dmr_voice import examine
+from tx_audio_client import validate_mhz, sha_wav
+
+REPO_TOOLS = Path(__file__).resolve().parent
+# -7 MUST precede -P in DSD-FME, per upstream usage documentation.
+DSD_REFERENCE = "https://github.com/lwvmobile/dsd-fme/blob/audio_work/examples/cygwin_bat/complete_usage_options.txt"
+RTL_SOURCE = "https://github.com/lwvmobile/dsd-fme/blob/audio_work/src/rtl_sdr_fm.cpp"
+RTL_BW_CHOICES = (4, 6, 8, 12, 16, 24)
+
+
+def rtl_dsp_tuning_plan(freq_mhz: str, bw_khz: int = 12) -> dict:
+    """Mirror upstream DSD-FME rtl_sdr_fm.cpp optimal_settings().
+
+    A DSD-FME +252 kHz tuner-center offset is deliberate IQ-DC avoidance,
+    NOT a correction to be subtracted from the requested RF channel.
+    Internally the RTL callback rotates the IQ samples before demodulation.
+    """
+    desired = validate_mhz(freq_mhz)
+    if bw_khz not in RTL_BW_CHOICES:
+        raise ValueError("RTL bandwidth must be 4, 6, 8, 12, 16, or 24 kHz")
+    channel_hz = round(float(desired) * 1000000)
+    rate_in = bw_khz * 1000
+    downsample = (1000000 // rate_in) + 1
+    capture_rate = downsample * rate_in
+    offset_hz = capture_rate // 4
+    return {
+        "rf_channel_mhz": desired,
+        "dsp_target_hz": channel_hz,
+        "expected_rtl_center_hz": channel_hz + offset_hz,
+        "internal_center_offset_hz": offset_hz,
+        "capture_sample_rate_hz": capture_rate,
+        "rtl_bandwidth_khz": bw_khz,
+        "explanation": "Do NOT subtract the RTL offset from --freq; DSD-FME already shifts the RF channel back digitally.",
+        "source": RTL_SOURCE,
+    }
+
+
+def dmr_sync_summary(log_text: str) -> dict:
+    """Require explicit decoder frame-sync evidence, not just a TEMP WAV."""
+    lines = log_text.splitlines()
+    matches = [line.strip()[:300] for line in lines
+               if re.search(r"Sync:\s*[+-]DMR\b", line, re.IGNORECASE)]
+    return {
+        "dmr_sync_count": len(matches),
+        "dmr_sync_observed": bool(matches),
+        "dmr_sync_examples": matches[:8],
+        "meaning": ("DSD-FME logged DMR frame synchronization" if matches
+                    else "No explicit DMR frame-sync lines found; RF activity or a 44-byte TEMP WAV is not sync"),
+    }
+
+
+def build_decoder_command(program: str, freq: str, gain: int, ppm: int,
+                          device: int, output: Path, save_demod: bool = False,
+                          rtl_bw_khz: int = 12, decoder_mode: str = "dmr",
+                          invert_dmr: bool = False, rtl_volume: int = 2) -> list[str]:
+    validate_mhz(freq)
+    rtl_dsp_tuning_plan(freq, rtl_bw_khz)
+    if not 0 <= gain <= 49 or not -100 <= ppm <= 100 or device < 0:
+        raise ValueError("decoder device/gain/ppm outside supported range")
+    if decoder_mode not in ("dmr", "auto"):
+        raise ValueError("decoder mode must be dmr or auto")
+    if rtl_volume not in (1, 2, 3):
+        raise ValueError("RTL volume multiplier must be 1, 2, or 3")
+    audio = output / "decoded_wavs"
+    events = output / "dmr_events.log"
+    command = [
+        program, "-fs" if decoder_mode == "dmr" else "-fa",
+        "-i", f"rtl:{device}:{freq}M:{gain}:{ppm}:{rtl_bw_khz}:0:{rtl_volume}",
+        "-o", "null",                           # audio saved to WAV, not speakers
+    ]
+    if invert_dmr:
+        command += ["-xr"]  # explicitly expect inverted DMR signal
+    if save_demod:
+        # 48k discriminator audio, NOT decoded speech and NOT raw IQ.
+        # Reprocess it offline with: dsd-fme -fs -i file.wav -o null ...
+        command += ["-6", str(output / "dmr_discriminator_48k.wav")]
+    command += [
+        "-7", str(audio), "-P",                 # per-call decoded audio WAVs
+        "-J", str(events),
+    ]
+    return command
+
+
+def make_sender_command(wav: Path, freq: str, cc: int, tg: int,
+                        key: Path) -> list[str]:
+    validate_mhz(freq)
+    if not 0 <= cc <= 15 or not 1 <= tg <= 16777215:
+        raise ValueError("invalid DMR CC or TG")
+    if not wav.is_file():
+        raise ValueError("TX WAV file does not exist")
+    # This validation is read-only and runs BEFORE launching the receiver.
+    sha_wav(wav)
+    if not key.is_file():
+        raise ValueError("TX HMAC key file missing; run device provisioning first")
+    return [
+        sys.executable, str(REPO_TOOLS / "tx_audio_client.py"),
+        "--wav", str(wav), "--tx", freq, "--cc", str(cc),
+        "--tg", str(tg), "--key", str(key), "--adb"
+    ]
+
+
+def parser_for_tests() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--freq", required=True,
+                   help="DMR RX frequency MHz, e.g. 446.00625")
+    p.add_argument("--duration", type=int, default=40,
+                   help="maximum receive duration, 8-180 seconds (default 40)")
+    p.add_argument("--gain", type=int, default=8,
+                   help="RTL tuner gain 0-49 (0 = hardware AGC; start low to avoid overload)")
+    p.add_argument("--rtl-bw-khz", type=int, default=12, choices=RTL_BW_CHOICES,
+                   help="RTL demodulator bandwidth (default 12 kHz)")
+    p.add_argument("--rtl-volume", type=int, default=2, choices=(1, 2, 3),
+                   help="RTL post-FM sample gain (default 2; test 1 for clipping)")
+    p.add_argument("--decoder-mode", choices=("dmr", "auto"), default="dmr",
+                   help="DMR-only -fs (default), or auto-detect -fa")
+    p.add_argument("--invert-dmr", action="store_true",
+                   help="probe inverted DMR demodulation (-xr) if normal mode cannot sync")
+    p.add_argument("--ppm", type=int, default=0, help="RTL tuner PPM calibration")
+    p.add_argument("--device", type=int, default=0, help="RTL SDR device index")
+    p.add_argument("--decoder", default="dsd-fme", help="DSD-FME executable")
+    p.add_argument("--save-demod", action="store_true",
+                   help="also record 48 kHz FM discriminator WAV for offline DMR replay")
+    p.add_argument("--output", type=Path,
+                   help="directory for decoded voice, logs and JSON report")
+    p.add_argument("--reference", type=Path,
+                   help="original TTS WAV, for ENVELOPE comparison only")
+    p.add_argument("--send", action="store_true",
+                   help="explicit live TX through existing signed TX_AUDIO client")
+    p.add_argument("--ack-authorized", action="store_true",
+                   help="operator confirms selected channel/mode/power authorization")
+    p.add_argument("--wav", type=Path,
+                   help="canonical 16kHz mono WAV to send with --send")
+    p.add_argument("--cc", type=int, default=1)
+    p.add_argument("--tg", type=int, default=99)
+    p.add_argument("--key", type=Path, default=Path("tx_audio.key"))
+    p.add_argument("--dry-run", action="store_true",
+                   help="print planned commands without opening SDR or transmitting")
+    return p
+
+
+def stop_group(process: subprocess.Popen, grace: float = 5.0) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGINT)
+        process.wait(timeout=grace)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=2)
+
+
+def execute(args: argparse.Namespace) -> int:
+    try:
+        freq = validate_mhz(args.freq)
+        if not 8 <= args.duration <= 180:
+            raise ValueError("duration must be 8-180 seconds")
+        if args.send and not args.ack_authorized:
+            raise ValueError("live TX requires --ack-authorized")
+        if args.send and args.wav is None:
+            raise ValueError("live TX requires --wav")
+        if args.send and args.duration < 35:
+            raise ValueError("allow at least 35s receive window for bridged TX")
+        if args.send:
+            sender = make_sender_command(args.wav, freq, args.cc, args.tg, args.key)
+        else:
+            sender = None
+        if args.reference and not args.reference.is_file():
+            raise ValueError("reference WAV not found")
+        # Don't fabricate a recording by reusing an old directory.
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        directory = args.output or (Path("dmr_voice_tests") / stamp)
+        if directory.exists() and any(directory.iterdir()):
+            raise ValueError("output directory must be new or empty")
+        plan = rtl_dsp_tuning_plan(freq, args.rtl_bw_khz)
+        command = build_decoder_command(args.decoder, freq, args.gain,
+                                        args.ppm, args.device, directory,
+                                        save_demod=args.save_demod,
+                                        rtl_bw_khz=args.rtl_bw_khz,
+                                        decoder_mode=args.decoder_mode,
+                                        invert_dmr=args.invert_dmr,
+                                        rtl_volume=args.rtl_volume)
+    except (OSError, ValueError) as error:
+        print(f"Configuration error: {error}", file=sys.stderr)
+        return 2
+
+    planned = {
+        "mode": "live_send_and_receive" if args.send else "receive_only",
+        "frequency_mhz": freq, "capture_seconds": args.duration,
+        "rf_and_tuner_frequencies": plan,
+        "decoder_mode": args.decoder_mode,
+        "dmr_polarity_forced_inverted": args.invert_dmr,
+        "decoder_command": command,
+        "sender_command": (["[signed TX_AUDIO request via ADB; key redacted]"]
+                           if sender else None),
+        "decoder_reference": DSD_REFERENCE,
+        "demodulated_48khz_capture": args.save_demod,
+        "note": "no radio transmission in default receive-only mode"
+    }
+    if args.dry_run:
+        print(json.dumps(planned, indent=2))
+        return 0
+
+    if not shutil.which(args.decoder) and not Path(args.decoder).is_file():
+        print("DSD-FME executable not found. Follow docs/DMR_RECEIVE_VOICE_VERIFICATION.md",
+              file=sys.stderr)
+        return 2
+    print(
+        f"Requested RF target: {freq} MHz; expected RTL tuner center: "
+        f"{plan['expected_rtl_center_hz']/1000000:.6f} MHz "
+        f"(internal +{plan['internal_center_offset_hz']} Hz offset; DSP shifts back).",
+        flush=True)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory/"decoded_wavs").mkdir(exist_ok=True)
+    started = datetime.now(timezone.utc).isoformat()
+    planned["start_utc"] = started
+    (directory/"session.json").write_text(json.dumps(planned, indent=2)+"\n")
+    log_file = directory / "dsd_decoder_console.log"
+    send_result = None
+    decoder_rc = None
+    process = None
+    print(f"Starting DSD-FME listen on {freq} MHz; output: {directory}", flush=True)
+    print("Important: transmitter-to-SDR proximity can overload the tuner. Use low gain, safe separation/attenuation.", flush=True)
+    try:
+        with log_file.open("w", encoding="utf-8", errors="replace") as log:
+            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                       start_new_session=True)
+            start = time.monotonic()
+            sender_launched = False
+            while time.monotonic() - start < args.duration:
+                if process.poll() is not None:
+                    print("DSD-FME exited before capture time finished; review decoder console.",
+                          file=sys.stderr)
+                    break
+                if sender is not None and not sender_launched and time.monotonic() - start >= 3.0:
+                    sender_launched = True
+                    print("Receiver armed. Sending one HMAC-protected TX_AUDIO request.", flush=True)
+                    try:
+                        sent = subprocess.run(sender, capture_output=True, text=True,
+                                              timeout=35, check=False)
+                        send_result = {
+                            "exit_code": sent.returncode,
+                            "stdout": sent.stdout[-3000:],
+                            "stderr": sent.stderr[-3000:],
+                            "note": "ADB broadcast completion is NOT decoded RF audio proof"
+                        }
+                    except (OSError, subprocess.TimeoutExpired) as error:
+                        send_result = {"error": str(error)}
+                    (directory/"send_result.json").write_text(
+                        json.dumps(send_result, indent=2)+"\n")
+                time.sleep(0.2)
+    except (OSError, KeyboardInterrupt) as error:
+        print(f"Receiver interrupted: {error}", file=sys.stderr)
+    finally:
+        if process is not None:
+            stop_group(process)
+            decoder_rc = process.returncode
+
+    audio_paths = sorted((directory/"decoded_wavs").rglob("*.wav"))
+    report = examine(audio_paths, args.reference or (args.wav if args.send else None))
+    try:
+        sync = dmr_sync_summary(log_file.read_text(encoding="utf-8", errors="replace"))
+    except OSError as error:
+        sync = {"dmr_sync_observed": False, "dmr_sync_count": 0,
+                "log_error": str(error)}
+    report.update({
+        "dmr_frame_sync": sync,
+        "rf_and_tuner_frequencies": plan,
+        "frequency_mhz": freq,
+        "rx_decoder": "DSD-FME",
+        "decoder_exit_code": decoder_rc,
+        "decoder_console_log": str(log_file),
+        "event_log": str(directory/"dmr_events.log"),
+        "sender": send_result,
+        "note": "Assessment is receiver-side voice evidence, not a verification of direct digital TX injection.",
+        "discriminator_capture": (str(directory/"dmr_discriminator_48k.wav")
+                                 if args.save_demod else None)
+    })
+    (directory/"report.json").write_text(json.dumps(report, indent=2)+"\n")
+    print(json.dumps({"report": str(directory/"report.json"),
+                      "assessment": report["assessment"],
+                      "dmr_sync_observed": sync.get("dmr_sync_observed", False),
+                      "saved_decoded_wavs": len(audio_paths),
+                      "send_result": send_result}, indent=2))
+    if report["assessment"] == "no_valid_decoded_wave":
+        print("No decoded audio. --freq is the desired RF channel: do NOT subtract DSD-FME's internal +252k center offset. Check DMR sync, clipping and inverted polarity.", file=sys.stderr)
+        return 3
+    return 0
+
+
+def main(argv=None) -> int:
+    p = parser_for_tests()
+    args = p.parse_args(argv)
+    return execute(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

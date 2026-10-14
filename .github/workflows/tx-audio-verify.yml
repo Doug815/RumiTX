@@ -1,0 +1,93 @@
+name: RumiTX v2.3.1 TX_AUDIO build check
+on:
+  push:
+    branches: [feature/tx-audio-v231]
+  pull_request:
+    branches: [v2.3.1-source]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tx-audio-v231-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  debug-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout v2.3.1-derived source
+        uses: actions/checkout@v4
+      - name: Offline TX_AUDIO wire-contract tests
+        run: python3 -m unittest discover -s tools -p 'test_*.py' -v
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install Android API 33 using preinstalled SDK
+        run: |
+          echo "SDK=${ANDROID_HOME:-${ANDROID_SDK_ROOT:-unset}}"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n1)"
+          echo "Using $SDKMANAGER"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-33" "build-tools;33.0.2"
+      - name: Generate compile-only Android 8.1 HIDL signatures
+        run: bash tools/build_hidl_compile_stubs.sh
+      - name: Gradle 7.5
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "7.5"
+      - name: Assemble test APK (cannot update release-signed app)
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+      - name: Stage APK and verified SHA-256 checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(app/build/outputs/apk/debug/*.apk)
+          if [[ ${#apks[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one debug APK, got ${#apks[@]}"
+            exit 1
+          fi
+          mkdir -p ci-artifacts
+          artifact_apk="RumiTX-v231-TX_AUDIO-${GITHUB_SHA:0:12}-DEBUG-ONLY.apk"
+          cp -- "${apks[0]}" "ci-artifacts/${artifact_apk}"
+          (
+            cd ci-artifacts
+            sha256sum "${artifact_apk}" > SHA256SUMS.txt
+            sha256sum --check SHA256SUMS.txt
+            {
+              printf 'source_repo=%s\n' "${GITHUB_REPOSITORY}"
+              printf 'source_commit=%s\n' "$(git rev-parse HEAD)"
+              printf 'source_ref=%s\n' "${GITHUB_REF}"
+              printf 'ci_run=%s\n' "${GITHUB_RUN_ID}"
+              printf 'ci_attempt=%s\n' "${GITHUB_RUN_ATTEMPT}"
+              printf 'application_id=com.rumitx.app\n'
+              printf 'apk_signing=CI DEBUG CERTIFICATE; NOT INSTALLABLE OVER RELEASE-SIGNED V2.3.1\n'
+              printf 'physical_s80_test=NOT PERFORMED BY CI\n'
+            } > BUILD_INFO.txt
+          )
+          {
+            echo '### RumiTX TX_AUDIO APK — DEBUG TEST BUILD ONLY'
+            echo ''
+            echo 'Artifact includes **APK**, **SHA256SUMS.txt**, and **BUILD_INFO.txt**.'
+            echo ''
+            echo '```text'
+            cat ci-artifacts/SHA256SUMS.txt
+            echo '```'
+            echo ''
+            echo 'Verify after extracting the GitHub Actions artifact:'
+            echo '```bash'
+            echo 'sha256sum -c SHA256SUMS.txt'
+            echo '```'
+            echo ''
+            echo '**Signing gate:** the original v2.3.1 release signing certificate is required for an in-place update. Do not uninstall the existing app or sideload this debug APK over it.'
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - name: Upload APK + SHA256 + build provenance (GitHub Actions only)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rumitx-v231-tx-audio-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-artifacts/
+          if-no-files-found: error
+          retention-days: 30

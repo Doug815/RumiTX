@@ -14,6 +14,20 @@ public class HidlAdapter implements BootCoordinator.Hidl {
     private final StockAudioRoute audio;
     public HidlAdapter(android.content.Context context){audio=new StockAudioRoute(context);}
     public void closeAudio(){audio.close();}
+    /**
+     * Diagnostic only: temporarily call exactly the already-supported stock
+     * RX route stop values; never change HIDL ownership or speak_enable.
+     * Returns false when no successful RX-open callback was seen.
+     */
+    public boolean suspendStockRxRouteForAnalogProbe() {
+        return audio.suspendForAnalogTxProbe();
+    }
+
+    /** Called after PTT release, including exceptions/cancellation. */
+    public boolean restoreStockRxRouteAfterAnalogProbe() {
+        return audio.restoreAfterAnalogTxProbe();
+    }
+
     private volatile java.util.function.IntConsumer rxListener;
     public void setRxListener(java.util.function.IntConsumer listener){rxListener=listener;}
 
