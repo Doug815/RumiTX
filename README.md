@@ -61,6 +61,41 @@ RumiTX is a from-scratch rebuild of the S80's radio interface, reverse-engineere
 - **DMR text messaging** — Pending UART probe to verify module data-frame support
 - **ATAK integration** — CoT position sharing, repeater markers, team messaging
 
+## 🧠 RUMI AI — Local Radio Intelligence (Coming Soon)
+
+**Talk to your radio. It understands.**
+
+We're training a custom AI model that runs entirely on-device — no cloud, no internet, no latency. Just tell it what you want in plain English and it handles the rest.
+
+### What It Does
+
+**Voice-to-Radio Control:**
+- *"Switch to channel 5"* → Channel changes instantly
+- *"Make the VFO 446.00625 MHz"* → Frequency set, validated against your authorized list
+- *"Send a text to ops saying I'm on site"* → DMR text composed, ready for your confirmation
+
+**Radio Knowledge Brain (v2):**
+- *"What's the national calling frequency?"* → Instant answer
+- *"What's the difference between DMR Tier II and analog FM?"* → Clear explanation
+- *"What's the repeater offset for 146.52?"* → Band plan knowledge on tap
+- Emergency frequencies, first-responder protocols, first-aid basics — all offline
+
+**Spectrum Analyzer Integration:**
+- *"Scan 440 to 450 MHz"* → Triggers a spectrum sweep, shows you what's there
+- *"What's that signal at 446.00625?"* → Identifies what you're hearing
+- Voice-controlled waterfall, signal identification, one interface for radio AND spectrum
+
+### How It Works
+
+The model is a fine-tuned Qwen2.5 (0.5B parameters — tiny, fast, runs on the S80) trained specifically on radio commands and amateur radio knowledge. A deterministic safety validator independently checks every command against your channel plan and authorizations before anything touches RF hardware. The AI proposes, the validator gates, you confirm.
+
+**No cloud. No subscription. No data leaves your device.**
+
+### Sneak Peek
+
+![RUMI AI Concept](assets/rumi-ai-sneak-peek.jpg)
+*Early concept: Push to talk with Rumi, text input, radio control — all in one interface*
+
 
 ## Support
 
