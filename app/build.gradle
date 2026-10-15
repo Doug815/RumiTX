@@ -1,6 +1,8 @@
 apply plugin: 'com.android.application'
 
 android {
+    // S80 is Android 8.1: intentionally retain target API 27 for this sideloaded field device.
+    lintOptions { disable 'ExpiredTargetSdkVersion' }
     compileSdkVersion 33
 
     defaultConfig {
