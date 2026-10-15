@@ -38,7 +38,7 @@ public final class RumiAiActivity extends Activity {
     private String conversation="";
     private static int dp(Activity a,int d){return Math.round(d*a.getResources().getDisplayMetrics().density);}
     private TextView text(String s,int size,int color){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);t.setPadding(dp(this,8),dp(this,7),dp(this,8),dp(this,7));return t;}
-    private Button button(String label){Button b=new Button(this);b.setText(label);b.setTextAllCaps(false);b.setTextSize(12);return b;}
+    private Button button(String label){Button b=new Button(this);b.setText(label);b.setAllCaps(false);b.setTextSize(12);return b;}
     private LinearLayout.LayoutParams full(){return new LinearLayout.LayoutParams(-1,-2);}
     private void post(String s){main.post(()->{transcript.append(s+"\n\n");});}
     private void info(String s){main.post(()->status.setText(s));}
