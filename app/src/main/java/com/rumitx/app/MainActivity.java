@@ -40,6 +40,23 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        // 2030 on-device assistant launcher. Keep all existing channel / TX controls intact.
+        android.widget.TextView aiLauncher = new android.widget.TextView(this);
+        aiLauncher.setText("V3 AI");
+        aiLauncher.setTextSize(12);
+        aiLauncher.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+        aiLauncher.setTextColor(0xff00e6ff);
+        aiLauncher.setGravity(android.view.Gravity.CENTER);
+        aiLauncher.setBackgroundColor(0xff102334);
+        android.widget.FrameLayout.LayoutParams aiPlacement =
+            new android.widget.FrameLayout.LayoutParams(
+                (int)(60*getResources().getDisplayMetrics().density),
+                (int)(40*getResources().getDisplayMetrics().density),
+                android.view.Gravity.TOP | android.view.Gravity.RIGHT);
+        aiPlacement.rightMargin=(int)(12*getResources().getDisplayMetrics().density);
+        aiLauncher.setOnClickListener(v ->
+            startActivity(new Intent(this,RumiAiActivity.class)));
+        ((android.widget.FrameLayout)findViewById(android.R.id.content)).addView(aiLauncher,aiPlacement);
 
         // Audio permission for tone detection (Discovery Mode)
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
