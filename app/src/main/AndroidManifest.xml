@@ -38,6 +38,8 @@
         <activity android:name=".tak.MessagingStatusActivity" android:exported="false" />
         <service android:name=".tak.GeoChatService" android:exported="false" />
         <service android:name=".RadioService" android:exported="false" />
+        <activity android:name=".RumiAiActivity" android:exported="false" />
+        <service android:name=".RumiAiService" android:exported="false" />
         <service android:name=".tak.TakService" android:exported="false" />
     </application>
 </manifest>
