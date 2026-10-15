@@ -1,0 +1,62 @@
+name: RumiTX 2030 V3 AI APK
+on:
+  push:
+    branches:
+      - feature/v3-ondevice-ai-s80
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Android SDK 33
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n1)"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-33" "build-tools;33.0.2"
+      - name: Compile-only Android 8.1 HIDL signatures
+        run: bash tools/build_hidl_compile_stubs.sh
+      - name: Gradle 7.5
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "7.5"
+      - name: Build debug and unsigned release APKs
+        run: gradle --no-daemon --stacktrace :app:assembleDebug :app:assembleRelease
+      - name: Stage APKs and checksums
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/RumiTX-2030-V3-AI-DEBUG.apk
+          cp app/build/outputs/apk/release/app-release-unsigned.apk dist/RumiTX-2030-V3-AI-UNSIGNED.apk
+          (cd dist && sha256sum *.apk > SHA256SUMS.txt)
+          cat > dist/README.txt <<'EOF'
+          RumiTX 2030 V3 — On-device S80 AI Integration
+          Built from feature/v3-ondevice-ai-s80, based on feature/tx-audio-v231.
+          This build keeps existing radio code and adds the offline assistant.
+          Before first AI use, import the S80 v3-phone-package.tar.gz and
+          the verified 1,107,409,344-byte Qwen3-1.7B.Q4_K_M.gguf from the UI.
+          
+          SIGNING WARNING:
+          DEBUG is signed by GitHub's ephemeral debug key, NOT the certificate
+          of the currently-installed RumiTX app. Do not uninstall current RumiTX.
+          For a clean update sign UNSIGNED with the original ThinkPad signing
+          key ~/rumitx-work/signing/local-debug.keystore using zipalign and apksigner.
+          This CI does not possess or publish that private signing key.
+          Phone-level functionality still needs physical DOOGEE S80 testing.
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rumitx-v3-ai-apks
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
