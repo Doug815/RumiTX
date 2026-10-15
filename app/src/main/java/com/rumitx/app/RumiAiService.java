@@ -17,7 +17,7 @@ public final class RumiAiService extends Service {
     private static volatile String state="not started";
     private final ExecutorService executor=Executors.newSingleThreadExecutor();
     private volatile boolean stopped=false;
-    private volatile Process process;
+    private volatile java.lang.Process process;
     public static String status(){return state;}
     @Override public IBinder onBind(Intent i){return null;}
     @Override public void onCreate(){
@@ -52,7 +52,7 @@ public final class RumiAiService extends Service {
             pb.directory(getFilesDir());pb.environment().put("LD_LIBRARY_PATH",getFilesDir().getAbsolutePath());
             pb.redirectErrorStream(true);
             process=pb.start();
-            final Process p=process;
+            final java.lang.Process p=process;
             Thread drain=new Thread(()->{
                 try(BufferedReader r=new BufferedReader(new InputStreamReader(p.getInputStream()))){
                     String line;while((line=r.readLine())!=null&&!stopped){Log.i("RumiTX-V3",line.length()>500?line.substring(0,500):line);}
@@ -73,7 +73,7 @@ public final class RumiAiService extends Service {
         }catch(Exception e){return false;}finally{if(c!=null)c.disconnect();}
     }
     @Override public void onDestroy(){
-        stopped=true;Process p=process;if(p!=null){p.destroy();try{p.waitFor(3,java.util.concurrent.TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}if(p.isAlive())p.destroyForcibly();}
+        stopped=true;java.lang.Process p=process;if(p!=null){p.destroy();try{p.waitFor(3,java.util.concurrent.TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}if(p.isAlive())p.destroyForcibly();}
         executor.shutdownNow();update("AI stopped · radio remains active");stopForeground(true);super.onDestroy();
     }
 }
