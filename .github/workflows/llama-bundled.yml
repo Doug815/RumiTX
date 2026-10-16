@@ -42,6 +42,25 @@ jobs:
           if grep -Fq 'android:debuggable="true"' app/src/main/AndroidManifest.xml; then
             echo 'Release cannot be debuggable' >&2; exit 1
           fi
+      - name: Test Google Drive large-model confirmation handler
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-tests
+          javac -d .ci-tests app/src/main/java/com/rumitx/app/GoogleDriveConfirmation.java tools/tests/GoogleDriveConfirmationTest.java
+          java -cp .ci-tests com.rumitx.app.GoogleDriveConfirmationTest
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path("app/src/main/java/com/rumitx/app/LlamaModelManager.java").read_text()
+          start=src.index("File model=file(ctx);",src.index("File ensureDownloaded("))
+          verify=src.index("verifySha256(model,callback)",start)
+          storage=src.index("verifyStorage(ctx)",start)
+          assert start < verify < storage, "Existing local GGUF must be verified before download or storage checks"
+          assert "EXPECTED_SHA256" in src and "importFromUri(" in src
+          ui=Path("app/src/main/java/com/rumitx/app/LlamaChatActivity.java").read_text()
+          assert "Intent.ACTION_OPEN_DOCUMENT" in ui and "LlamaModelManager.importFromUri(" in ui
+          print("Existing model reuse + manual file import wiring verified")
+          PY
       - name: Generate compileOnly Android 8.1 HIDL signatures
         run: bash tools/build_hidl_compile_stubs.sh
       - name: Cross-compile llama.cpp and JNI for Android arm64-v8a
