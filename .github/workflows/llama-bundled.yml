@@ -61,6 +61,8 @@ jobs:
           assert "Intent.ACTION_OPEN_DOCUMENT" in ui and "LlamaModelManager.importFromUri(" in ui
           print("Existing model reuse + manual file import wiring verified")
           PY
+      - name: Regression test persisted V4 database and older schema migrations
+        run: python3 tools/tests/test_channel_database_migration.py
       - name: Generate compileOnly Android 8.1 HIDL signatures
         run: bash tools/build_hidl_compile_stubs.sh
       - name: Cross-compile llama.cpp and JNI for Android arm64-v8a
