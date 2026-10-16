@@ -27,17 +27,19 @@ import java.util.zip.GZIPInputStream;
 public final class RumiAiActivity extends Activity {
     private static final int PICK_RUNTIME=102, PICK_MODEL=103;
     private static final String MODEL_SHA="a9d99ed72848f0c26d2c380490108102aa19b47d565b192b7719e0d1f8832ba1";
-    private static final String SYSTEM="You are RumiTX. Respond briefly in plain English, never JSON. Preserve numbers and frequencies exactly. Do not guess or claim radio actions succeeded. Only the app controls the radio.";
+    private static final String SYSTEM="You are RumiTX, a friendly and knowledgeable companion. Chat naturally, answer questions with helpful detail, and remember the conversation. Never output JSON or pretend a radio command succeeded. Keep technical figures exact; if unsure, say so.";
     // All hardware commands are parsed locally; chat model is never trusted to execute radio operations.
     private final ExecutorService io=Executors.newSingleThreadExecutor();
     private final Handler main=new Handler();
     private TextView status, transcript, setupHelp;
     private ScrollView chatScroll;
     private EditText message;
-    private Button run, send, packageButton, modelButton;
+    private Button run, send, packageButton, modelButton, micButton, voiceButton, resetButton;
+    private RumiVoice voice;
+    private TextView voiceStatus;
     private volatile boolean busy;
     private volatile boolean requestInFlight;
-    private String conversation="";
+    private final RumiChatContext chatContext=new RumiChatContext();
     private static int dp(Activity a,int d){return Math.round(d*a.getResources().getDisplayMetrics().density);}
     private TextView text(String s,int size,int color){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);t.setPadding(dp(this,8),dp(this,7),dp(this,8),dp(this,7));return t;}
     private Button button(String label){Button b=new Button(this);b.setText(label);b.setAllCaps(false);b.setTextSize(12);return b;}
@@ -68,10 +70,52 @@ public final class RumiAiActivity extends Activity {
         LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
         message=new EditText(this);message.setTextColor(Color.WHITE);message.setHintTextColor(0xff829caf);message.setHint("Ask RumiTX…");message.setSingleLine(false);message.setMinLines(1);message.setMaxLines(3);message.setTextSize(15);
         row.addView(message,new LinearLayout.LayoutParams(0,-2,1));send=button("Send");row.addView(send,new LinearLayout.LayoutParams(dp(this,73),dp(this,54)));outer.addView(row,full());
+        LinearLayout voiceControls=new LinearLayout(this);voiceControls.setOrientation(LinearLayout.HORIZONTAL);
+        micButton=button("MIC · TALK");voiceButton=button("SPEAK: OFF");resetButton=button("NEW CHAT");
+        voiceControls.addView(micButton,new LinearLayout.LayoutParams(0,dp(this,46),1));
+        voiceControls.addView(voiceButton,new LinearLayout.LayoutParams(0,dp(this,46),1));
+        voiceControls.addView(resetButton,new LinearLayout.LayoutParams(0,dp(this,46),1));
+        outer.addView(voiceControls,full());
+        voiceStatus=text("Tap MIC to speak. Android's speech service may use the network; the AI model runs locally.",11,0xff9baec2);
+        outer.addView(voiceStatus,full());
+        voice=new RumiVoice(this,new RumiVoice.Callback(){
+            @Override public void onSpeech(String recognized){
+                runOnUiThread(()->{
+                    voiceStatus.setText("Heard: "+recognized);
+                    if(requestInFlight){message.setText(recognized);return;}
+                    message.setText(recognized);
+                    ask();
+                });
+            }
+            @Override public void onStatus(String update){
+                runOnUiThread(()->{if(!isFinishing())voiceStatus.setText(update);});
+            }
+        });
+        micButton.setOnClickListener(v->{
+            if(busy||requestInFlight){voiceStatus.setText("Wait until RumiTX finishes answering.");return;}
+            if(VoiceTxBridge.isTransmitting()||RadioController.getInstance().isKeyed()){
+                voiceStatus.setText("Release PTT before using voice chat.");return;
+            }
+            voice.setSpeakingEnabled(true);
+            voiceButton.setText("SPEAK: ON");
+            voice.listen();
+        });
+        voiceButton.setOnClickListener(v->{
+            boolean enabled=!voice.isSpeakingEnabled();
+            voice.setSpeakingEnabled(enabled);
+            voiceButton.setText(enabled?"SPEAK: ON":"SPEAK: OFF");
+        });
+        resetButton.setOnClickListener(v->{
+            if(requestInFlight){voiceStatus.setText("Wait for the current answer before starting a new chat.");return;}
+            chatContext.clear();
+            transcript.setText("RumiTX 2030 · New conversation started.\n\n");
+            voice.stopSpeech();
+            voiceStatus.setText("Conversation cleared. Radio settings unchanged.");
+        });
         send.setOnClickListener(v->ask());
         main.postDelayed(poll,400);
     }
-    private final Runnable poll=new Runnable(){public void run(){if(isFinishing())return;if(!busy){String state=RumiAiService.status();status.setText(ready()?"V3 runtime installed · "+state:"Setup needed · "+state);setupHelp.setVisibility(ready()?View.GONE:View.VISIBLE);send.setEnabled(ready()&&!requestInFlight);run.setEnabled(ready());}main.postDelayed(this,1800);}};
+    private final Runnable poll=new Runnable(){public void run(){if(isFinishing())return;if(!busy){String state=RumiAiService.status();status.setText(ready()?"V3 runtime installed · "+state:"Setup needed · "+state);setupHelp.setVisibility(ready()?View.GONE:View.VISIBLE);send.setEnabled(ready()&&!requestInFlight);micButton.setEnabled(ready()&&!requestInFlight&&!busy);run.setEnabled(ready());}main.postDelayed(this,1800);}};
     private void pick(int request,String type){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType(type);if(request==PICK_RUNTIME)i.setType("*/*");startActivityForResult(i,request);}
     @Override protected void onActivityResult(int req,int result,Intent data){super.onActivityResult(req,result,data);if(result!=RESULT_OK||data==null||data.getData()==null)return;Uri uri=data.getData();setBusy(true);io.execute(()->{
         try{if(req==PICK_RUNTIME)extractRuntime(uri);else if(req==PICK_MODEL)installModel(uri);info("Import successful. "+(ready()?"Start AI to run the model.":"Import the other file."));}
@@ -144,9 +188,14 @@ public final class RumiAiActivity extends Activity {
             }catch(Exception e){
                 response="Request failed: "+e.getMessage()+". Verify the radio or V3 engine is ready.";
             }
-            post("RUMITX  ·  "+response);
+            final String answer=response;
+            post("RUMITX  ·  "+answer);
             requestInFlight=false;
-            main.post(()->send.setEnabled(ready()));
+            main.post(()->{
+                send.setEnabled(ready());
+                micButton.setEnabled(ready());
+                if(voice!=null)voice.say(answer);
+            });
         });
     }
 
@@ -275,8 +324,8 @@ public final class RumiAiActivity extends Activity {
         return a.isEmpty()?"No response received.":a;
     }
     private String complete(String question)throws Exception{
-        JSONObject req=new JSONObject();String prompt="<|im_start|>system\n"+SYSTEM+"<|im_end|>\n"+conversation+"<|im_start|>user\n"+question+"<|im_end|>\n<|im_start|>assistant\n";
-        req.put("prompt",prompt);req.put("n_predict",96);req.put("temperature",0.1);req.put("stop",new JSONArray().put("<|im_end|>"));
+        JSONObject req=new JSONObject();String prompt="<|im_start|>system\n"+SYSTEM+"<|im_end|>\n"+chatContext.render()+"<|im_start|>user\n"+question.replace("<|im_","[im_")+"<|im_end|>\n<|im_start|>assistant\n";
+        req.put("prompt",prompt);req.put("n_predict",160);req.put("temperature",0.35);req.put("stop",new JSONArray().put("<|im_end|>"));
         HttpURLConnection con=(HttpURLConnection)new URL("http://127.0.0.1:8080/completion").openConnection();
         con.setRequestMethod("POST");con.setConnectTimeout(3500);con.setReadTimeout(180000);con.setDoOutput(true);con.setRequestProperty("Content-Type","application/json");
         try{
@@ -285,11 +334,10 @@ public final class RumiAiActivity extends Activity {
             ByteArrayOutputStream sink=new ByteArrayOutputStream();try(InputStream in=con.getInputStream()){byte[] buf=new byte[8192];int n;while((n=in.read(buf))!=-1){if(sink.size()+n>262144)throw new IOException("Response too large");sink.write(buf,0,n);}}
             String answer=plainAnswer(new JSONObject(sink.toString("UTF-8")).optString("content",""));
             if(answer.length()==0)answer="No response received.";
-            // Retain only the latest conversational exchange to limit S80 context usage.
-            String safeQ=question.replace("<|im_","[im_"),safeA=answer.replace("<|im_","[im_");
-            conversation="<|im_start|>user\n"+safeQ+"<|im_end|>\n<|im_start|>assistant\n"+safeA+"<|im_end|>\n";
+            // Retain a rolling window of up to four conversational exchanges.
+            chatContext.add(question,answer);
             return answer;
         }finally{con.disconnect();}
     }
-    @Override protected void onDestroy(){main.removeCallbacks(poll);io.shutdownNow();super.onDestroy();}
+    @Override protected void onDestroy(){main.removeCallbacks(poll);if(voice!=null)voice.close();io.shutdownNow();super.onDestroy();}
 }
