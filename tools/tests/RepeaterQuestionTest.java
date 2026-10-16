@@ -20,6 +20,7 @@ public final class RepeaterQuestionTest {
 
         RepeaterQuestion callsign=RepeaterQuestion.parse("What's the frequency for K9RFD?");
         check(callsign!=null&&"K9RFD".equals(callsign.callsign),"Callsign lookup parser");
+        check(callsign.city.isEmpty(),"Callsign must not be misread as a city");
         RepeaterQuestion freq=RepeaterQuestion.parse("what's on 442.650");
         check(freq!=null&&freq.frequency!=null&&Math.abs(freq.frequency-442.650)<.00001,
             "Numeric repeater frequency parser");
