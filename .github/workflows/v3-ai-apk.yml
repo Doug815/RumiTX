@@ -17,6 +17,11 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - name: Regression-test radio command parser
+        run: |
+          mkdir -p /tmp/rumitx-parser-tests
+          javac -d /tmp/rumitx-parser-tests app/src/main/java/com/rumitx/app/RadioIntentParser.java tools/RadioIntentParserTest.java
+          java -cp /tmp/rumitx-parser-tests RadioIntentParserTest
       - name: Android SDK 33
         shell: bash
         run: |
