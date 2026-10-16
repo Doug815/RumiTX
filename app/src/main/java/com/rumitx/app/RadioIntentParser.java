@@ -40,6 +40,7 @@ public final class RadioIntentParser {
         if(DENY_TX.matcher(s).matches())return invalid("I can't key the transmitter by voice command.");
         // Questions about operating the radio are not commands to operate it.
         if(s.matches("^(?:how|why|what|when|where|should i|is it|do i)\\b.*"))return of(Type.CHAT);
+        if(s.matches("^(?:please\\s+)?(?:tune|set|change|program|switch|go|select)\\s+(?:the\\s+)?(?:squelch|volume|bandwidth|power|talkgroup|timeslot)\\b.*"))return invalid("This radio setting is not supported by voice yet. No change made.");
         Matcher verb=ACTION.matcher(s);
         if(!verb.find())return of(Type.CHAT);
         Matcher channel=CHANNEL.matcher(s);
