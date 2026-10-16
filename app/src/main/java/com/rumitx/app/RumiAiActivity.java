@@ -376,6 +376,16 @@ public final class RumiAiActivity extends Activity {
     private String handleKnowledgeCommand(String q){
         String lower=q.toLowerCase(Locale.US).trim();
         try(ChannelDatabase db=new ChannelDatabase(this)){
+            // Additional conversational phrasings for existing catalog lookups.
+            int cityPhrase=lower.indexOf("repeaters in ");
+            if(cityPhrase>0){
+                String city=q.substring(cityPhrase+13).trim().replaceAll("[?.!]+$","");
+                return db.findRepeaters(city);
+            }
+            if(lower.startsWith("what is the frequency for ")||lower.startsWith("what's the frequency for ")){
+                int n=lower.startsWith("what is the frequency for ")?26:25;
+                return db.findRepeaters(q.substring(n).trim().replaceAll("[?.!]+$",""));
+            }
             if(lower.equals("how many repeaters")||lower.equals("repeater count")||
                lower.equals("how many repeater frequencies"))
                 return "There are "+db.repeaterCount()+" repeaters in your local SQLite catalog.";
@@ -407,7 +417,8 @@ public final class RumiAiActivity extends Activity {
                 return db.frequencyHistory();
             if(lower.startsWith("what frequency is ")||lower.startsWith("frequency of ")){
                 String name=q.substring(lower.startsWith("what frequency is ")?18:13).trim().replaceAll("[?.!]+$","");
-                return db.savedChannelSummary(name);
+                String saved=db.savedChannelSummary(name);
+                return saved.startsWith("No saved channel matches")?db.findRepeaters(name):saved;
             }
             if(lower.equals("what's in project nomad")||lower.equals("what is in project nomad"))
                 return "Project Nomad currently has "+db.nomadChunkCount()+" indexed searchable passages. Ask a specific question to search the content.";
