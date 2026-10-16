@@ -86,6 +86,7 @@ public class MainActivity extends Activity {
 
         findViewById(R.id.boot_status).setOnLongClickListener(v -> {RxDiagnostics.share(this);return true;});
         findViewById(R.id.repeaters_btn).setOnClickListener(v -> startActivity(new Intent(this,com.rumitx.app.repeaters.RepeaterActivity.class)));
+        findViewById(R.id.native_ai_btn).setOnClickListener(v -> startActivity(new Intent(this,LlamaChatActivity.class)));
         findViewById(R.id.tak_settings_btn).setOnClickListener(v->{v.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);startActivity(new Intent(this,com.rumitx.app.tak.TakActivity.class));});
         // Wire up buttons
         Button pttBtn = findViewById(R.id.ptt_button);
