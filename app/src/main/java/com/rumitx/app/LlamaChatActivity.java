@@ -3,6 +3,7 @@ package com.rumitx.app;
 import android.app.Activity;
 import android.os.Bundle;
 import android.content.Intent;
+import android.net.Uri;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.view.Gravity;
@@ -29,7 +30,8 @@ public final class LlamaChatActivity extends Activity {
     private ScrollView scroller;
     private TextView transcript,status,progress;
     private EditText input;
-    private Button send,retry;
+    private static final int PICK_GGUF=4108;
+    private Button send,retry,loadFromPhone;
     private volatile boolean busy;
     private String conversation="";
     private final String SYSTEM=
@@ -62,7 +64,7 @@ public final class LlamaChatActivity extends Activity {
     }
     private void setBusy(boolean on){
         busy=on;
-        runOnUiThread(()->{if(!isFinishing()){send.setEnabled(!on);retry.setEnabled(!on);}});
+        runOnUiThread(()->{if(!isFinishing()){send.setEnabled(!on);retry.setEnabled(!on);loadFromPhone.setEnabled(!on);}});
     }
     @Override public void onCreate(Bundle state){
         super.onCreate(state);
@@ -77,9 +79,22 @@ public final class LlamaChatActivity extends Activity {
         page.addView(status);
         progress=text("Model: Qwen3-1.7B Q4_K_M · Internal Storage",11,0xff91b6c5);
         page.addView(progress);
-        retry=button("Retry download / load");
-        page.addView(retry,new LinearLayout.LayoutParams(-1,dp(45)));
+        LinearLayout modelControls=new LinearLayout(this);
+        modelControls.setOrientation(LinearLayout.HORIZONTAL);
+        retry=button("Retry / Download");
+        loadFromPhone=button("Load from phone");
+        modelControls.addView(retry,new LinearLayout.LayoutParams(0,dp(48),1));
+        modelControls.addView(loadFromPhone,new LinearLayout.LayoutParams(0,dp(48),1));
+        page.addView(modelControls,new LinearLayout.LayoutParams(-1,dp(48)));
         retry.setOnClickListener(v->initialize());
+        loadFromPhone.setOnClickListener(v->{
+            if(busy)return;
+            Intent picker=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            picker.addCategory(Intent.CATEGORY_OPENABLE);
+            picker.setType("*/*"); // Android provider MIME for .gguf varies.
+            picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivityForResult(picker,PICK_GGUF);
+        });
         scroller=new ScrollView(this);scroller.setFillViewport(true);
         transcript=text("",15,0xffe4f5fc);
         transcript.setTextIsSelectable(true);
@@ -96,34 +111,60 @@ public final class LlamaChatActivity extends Activity {
             "RumiTX 2030 · Native llama.cpp on ARM64\n\n"+
             "Offline after first model download. No root, no ADB and no external inference service.\n\n");
         transcript.setText(conversation);
-        setBusy(true);
         initialize();
     }
+    private void modelProgress(long bytes,long total,String phase){
+        runOnUiThread(()->{
+            if(isFinishing())return;
+            long pct=total>0?(bytes*100)/total:0;
+            status.setText(phase);
+            progress.setText(String.format(java.util.Locale.US,
+              "Model: %d%%  ·  %d / %d MiB",pct,bytes/1048576,total/1048576));
+        });
+    }
+    private void loadNative(File model){
+        uiStatus("Loading verified GGUF into device memory…");
+        synchronized(ENGINE_LOCK){
+            if(engine==null){
+                LlamaBridge bridge=new LlamaBridge();
+                bridge.initModel(model.getAbsolutePath());
+                engine=bridge;
+            }
+        }
+        uiStatus("READY · Local ARM64 inference; no root needed");
+    }
     private void initialize(){
-        if(busy && !status.getText().toString().startsWith("Initializing"))return;
+        if(busy)return;
         setBusy(true);
         WORK.execute(()->{
             try{
-                File model=LlamaModelManager.ensureDownloaded(getApplicationContext(),
-                    (bytes,total,phase)->runOnUiThread(()->{
-                        if(isFinishing())return;
-                        long pct=total>0?(bytes*100)/total:0;
-                        status.setText(phase);
-                        progress.setText(String.format(java.util.Locale.US,
-                          "Model: %d%%  ·  %d / %d MB",pct,bytes/1048576,total/1048576));
-                    }));
-                uiStatus("Loading GGUF into device memory…");
                 synchronized(ENGINE_LOCK){
-                    if(engine==null){
-                        LlamaBridge bridge=new LlamaBridge();
-                        bridge.initModel(model.getAbsolutePath());
-                        engine=bridge;
+                    if(engine!=null){
+                        uiStatus("READY · Native model already loaded");
+                        return;
                     }
                 }
-                uiStatus("READY · All subsequent inference is offline");
+                File model=LlamaModelManager.ensureDownloaded(getApplicationContext(),this::modelProgress);
+                loadNative(model);
             }catch(Throwable t){
-                uiStatus("Model setup failed: "+t.getMessage()+" — tap Retry");
+                uiStatus("Model setup failed: "+t.getMessage()+" — retry or load from phone");
                 android.util.Log.e("RumiTX-JNI","Model setup failed",t);
+            }finally{setBusy(false);}
+        });
+    }
+    @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){
+        super.onActivityResult(requestCode,resultCode,data);
+        if(requestCode!=PICK_GGUF||resultCode!=RESULT_OK||data==null||data.getData()==null)return;
+        if(busy)return;
+        final Uri uri=data.getData();
+        setBusy(true);
+        WORK.execute(()->{
+            try{
+                File model=LlamaModelManager.importFromUri(getApplicationContext(),uri,this::modelProgress);
+                loadNative(model);
+            }catch(Throwable t){
+                uiStatus("Selected model rejected: "+t.getMessage());
+                android.util.Log.e("RumiTX-JNI","Manual model import failed",t);
             }finally{setBusy(false);}
         });
     }
