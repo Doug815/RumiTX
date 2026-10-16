@@ -1,0 +1,93 @@
+name: RumiTX v2.3.2 Bundled llama.cpp for non-rooted S80
+on:
+  push:
+    branches:
+      - feature/llama-bundled
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK 33, NDK r27 and build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TOOL="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n1)"
+          "$TOOL" --sdk_root="$ANDROID_HOME" --install "platforms;android-33" "build-tools;33.0.2" "ndk;27.2.12479018"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq patchelf ninja-build
+      - name: Set up Gradle 7.5
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '7.5'
+      - name: Verify application version and radio voice-TX guards
+        shell: bash
+        run: |
+          set -euxo pipefail
+          grep -F 'versionCode 20301048' app/build.gradle
+          grep -F 'versionName "2.3.2-llama-bundled"' app/build.gradle
+          grep -F 'applicationId "com.rumitx.app"' app/build.gradle
+          grep -F 'VoiceTxBridge.isTransmitting()' app/src/main/java/com/rumitx/app/PttDispatcher.java
+          grep -F 'VoiceTxBridge.isTransmitting()' app/src/main/java/com/rumitx/app/MainActivity.java
+          grep -F 'Voice TX in progress' app/src/main/java/com/rumitx/app/MainActivity.java
+          if grep -Fq 'android:debuggable="true"' app/src/main/AndroidManifest.xml; then
+            echo 'Release cannot be debuggable' >&2; exit 1
+          fi
+      - name: Generate compileOnly Android 8.1 HIDL signatures
+        run: bash tools/build_hidl_compile_stubs.sh
+      - name: Cross-compile llama.cpp and JNI for Android arm64-v8a
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: bash tools/build_llama_android.sh
+      - name: Build Android 8.1 release and CI debug APK
+        run: gradle --no-daemon --stacktrace :app:assembleRelease :app:assembleDebug -x lintVitalRelease
+      - name: Validate contents, package metadata and checksums
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release-unsigned.apk dist/RumiTX-v2.3.2-llama-bundled-UNSIGNED.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/RumiTX-v2.3.2-llama-bundled-CI-DEBUG.apk
+          cp tools/sign_llama_bundled.sh dist/sign_llama_bundled.sh
+          "$ANDROID_HOME/build-tools/33.0.2/aapt" dump badging dist/RumiTX-v2.3.2-llama-bundled-UNSIGNED.apk > dist/BADGING.txt
+          grep -F "package: name='com.rumitx.app' versionCode='20301048' versionName='2.3.2-llama-bundled'" dist/BADGING.txt
+          for lib in libllama.so libggml.so libggml-base.so libggml-cpu.so librumitx_llama_jni.so; do
+            unzip -l dist/RumiTX-v2.3.2-llama-bundled-UNSIGNED.apk "lib/arm64-v8a/$lib" | tee -a dist/LIBRARY_SIZES.txt
+          done
+          cp app/src/main/jniLibs/arm64-v8a/*.so dist/
+          (cd dist && sha256sum *.apk *.so > SHA256SUMS.txt)
+          cat > dist/README.txt <<'EOF'
+          RumiTX 2030 — v2.3.2-llama-bundled / versionCode 20301048
+          Base: v2.3.1-source, including Voice TX PTT/channel programming guards.
+          Pinned llama.cpp: b11206. Android ARM64 API 26 native .so libraries.
+          AI runs via app-process JNI, no root, shell installer, ADB or standalone executable.
+          The 1,107,409,344 byte GGUF is not embedded; it downloads to app private
+          files on first use, verifies SHA-256 before loading, and then works offline.
+          Google Drive public download availability is not verified by CI.
+          Embedded model SHA-256 check:
+          a9d99ed72848f0c26d2c380490108102aa19b47d565b192b7719e0d1f8832ba1
+
+          THIS ARTIFACT IS UNSIGNED. The CI debug APK uses a DIFFERENT certificate.
+          Original ThinkPad key: ~/rumitx-work/signing/local-debug.keystore
+          Do not upload the key or uninstall the working app.
+          Run sign_llama_bundled.sh on the ThinkPad, compare signing certificate to
+          a previously installed original-key APK, then stage the signed artifact at
+          /tmp/RumiTX-v2.3.2-llama-bundled.apk.
+          No installation or on-device tests were run as directed.
+          EOF
+      - name: Upload bundled llama native release candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: rumitx-v232-llama-bundled-unsigned
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
