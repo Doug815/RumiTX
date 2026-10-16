@@ -59,6 +59,10 @@ public final class LlamaChatActivity extends Activity {
     private volatile long lastNativePreview;
     private volatile String latestPreview="";
     private volatile boolean previewPending;
+    private volatile long activeRequestId;
+    private volatile long lastTokenAt;
+    private volatile String repeaterPromptContext="";
+    private static final long INFERENCE_TIMEOUT_MS=30000L;
     private final Runnable thinkTick=new Runnable(){
         @Override public void run(){
             if(!busy || isFinishing())return;
@@ -383,26 +387,51 @@ public final class LlamaChatActivity extends Activity {
     private String prompt(String question,String prior){
         // Last user /no_think applies even if the model was trained on action JSON.
         if(prior.length()>850)prior=prior.substring(prior.length()-850);
+        String localFacts=repeaterPromptContext;
+        if(localFacts.length()>800)localFacts=localFacts.substring(0,800);
         return "<|im_start|>system\n"+SYSTEM+"<|im_end|>\n"+
             "<|im_start|>user\n"+
+            (localFacts.isEmpty()?"":"Relevant local database facts for this conversation; do not guess beyond them:\n"+localFacts+"\n")+
             (prior.isEmpty()?"":"Earlier conversation:\n"+prior+"\n")+
             question+"\n/no_think<|im_end|>\n"+
             // Qwen3 recommended non-thinking prefill when bypassing chat template.
             "<|im_start|>assistant\n<think>\n\n</think>\n\n";
     }
-    private void preview(String raw){
-        long now=SystemClock.uptimeMillis();
+    private void preview(long requestId,String raw){
+        if(activeRequestId!=requestId)return;
+        lastTokenAt=SystemClock.uptimeMillis();
+        long now=lastTokenAt;
         latestPreview=raw.trim().startsWith("{")?"Composing an answer…":cleanAnswer(raw);
         if(now-lastNativePreview<140||previewPending)return;
         lastNativePreview=now;
         previewPending=true;
         main.post(()->{
             previewPending=false;
-            if(!busy||isFinishing())return;
+            if(activeRequestId!=requestId || !busy || isFinishing())return;
             transcript.setText(conversation+"RUMITX · "+latestPreview+" ▌");
             scrollLatest();
         });
     }
+
+    /** UI watchdog runs independently of JNI; native abort callback stops CPU decoding. */
+    private void watchdog(long requestId){
+        if(activeRequestId!=requestId||!busy||isFinishing())return;
+        long now=SystemClock.uptimeMillis();
+        if(now-lastTokenAt>=INFERENCE_TIMEOUT_MS || now-startedAt>=INFERENCE_TIMEOUT_MS){
+            // Invalidate this request before cancellation so its late worker result
+            // cannot replace the timeout message or unlock a new conversation.
+            activeRequestId=requestId+1;
+            LlamaBridge current;
+            synchronized(ENGINE_LOCK){current=engine;}
+            if(current!=null)current.cancelGeneration();
+            append("RUMITX · That took too long — try asking about a specific city or frequency.");
+            statusUi("Timed out after 30 seconds. Inference cancelled.");
+            setBusy(false);
+            return;
+        }
+        main.postDelayed(()->watchdog(requestId),1000);
+    }
+
     private void ask(){
         if(busy)return;
         String question=input.getText().toString().trim();
@@ -412,25 +441,38 @@ public final class LlamaChatActivity extends Activity {
         append("YOU · "+question);
         setBusy(true);
         statusUi("Rumi is processing on your S80…");
+        final long requestId=++activeRequestId;
+        lastTokenAt=SystemClock.uptimeMillis();
+        main.postDelayed(()->watchdog(requestId),1000);
         WORK.execute(()->{
             String reply;
             try{
-                RadioIntentParser.Intent intent=RadioIntentParser.parse(question);
-                if(intent.type!=RadioIntentParser.Type.CHAT){
-                    reply=runRadioIntent(intent);
-                }else{
-                    reply=RumiChatRouter.greeting(question);
-                    if(reply==null){
-                        LlamaBridge nativeEngine;
-                        synchronized(ENGINE_LOCK){nativeEngine=engine;}
-                        if(nativeEngine==null)throw new IllegalStateException("Model not loaded; Retry first");
-                        lastNativePreview=0;
-                        latestPreview="";
-                        previewPending=false;
-                        String raw=nativeEngine.generateStreaming(
-                            prompt(question,prior),80,bytes->
-                                preview(new String(bytes,StandardCharsets.UTF_8)));
-                        reply=cleanAnswer(raw);
+                // Local fact questions bypass the model completely: <15s target
+                // even on slow S80 hardware, with no invented repeater details.
+                RepeaterQuestion request=RepeaterQuestion.parse(question);
+                if(request!=null){
+                    RepeaterLocalSearch.Answer result=
+                        RepeaterLocalSearch.search(getApplicationContext(),request);
+                    repeaterPromptContext=result.promptContext;
+                    reply=result.reply;
+                } else {
+                    RadioIntentParser.Intent intent=RadioIntentParser.parse(question);
+                    if(intent.type!=RadioIntentParser.Type.CHAT){
+                        reply=runRadioIntent(intent);
+                    } else {
+                        reply=RumiChatRouter.greeting(question);
+                        if(reply==null){
+                            LlamaBridge nativeEngine;
+                            synchronized(ENGINE_LOCK){nativeEngine=engine;}
+                            if(nativeEngine==null)throw new IllegalStateException("Model not loaded; Retry first");
+                            lastNativePreview=0;
+                            latestPreview="";
+                            previewPending=false;
+                            String raw=nativeEngine.generateStreaming(
+                                prompt(question,prior),80,bytes->
+                                    preview(requestId,new String(bytes,StandardCharsets.UTF_8)));
+                            reply=cleanAnswer(raw);
+                        }
                     }
                 }
             }catch(Throwable t){
@@ -438,14 +480,13 @@ public final class LlamaChatActivity extends Activity {
                 android.util.Log.e("RumiTX-JNI","AI request failed",t);
             }
             final String result=reply;
-            // Append and speak on the MAIN looper; inference stays off it.
             main.post(()->{
-                if(isFinishing())return;
+                if(activeRequestId!=requestId||isFinishing())return;
                 conversation+="RUMITX · "+result+"\n\n";
                 if(conversation.length()>50000)conversation=conversation.substring(conversation.length()-50000);
                 transcript.setText(conversation);
                 getPreferences(0).edit().putString("conversation",conversation).apply();
-                status.setText("READY · ARM64 local AI");
+                status.setText("READY · Local repeater search and offline AI");
                 scrollLatest();
                 if(voice!=null)voice.say(result);
                 setBusy(false);
