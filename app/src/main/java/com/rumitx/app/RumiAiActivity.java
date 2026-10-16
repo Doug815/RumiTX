@@ -223,18 +223,24 @@ public final class RumiAiActivity extends Activity {
         io.execute(()->{
             String response;
             try{
-                RadioIntentParser.Intent intent=RadioIntentParser.parse(q);
-                switch(intent.type){
+                String knowledge=handleKnowledgeCommand(q);
+                if(knowledge!=null)response=knowledge;
+                else{
+                    RadioIntentParser.Intent intent=RadioIntentParser.parse(q);
+                    switch(intent.type){
                     case CHANNEL_NUMBER: response=changeChannel(intent.channelNumber);break;
-                    case FREQUENCY: response=changeFrequency(intent.frequencyMHz);break;
+                    case FREQUENCY: response=changeFrequency(intent);break;
                     case CHANNEL_NAME: response=changeChannelByName(intent.channelName);break;
-                    case UNSUPPORTED: response="I can switch saved channels and tune frequencies, but can't perform that radio action yet. No change was made.";break;
+                    case UNSUPPORTED: response=intent.error!=null?intent.error:"Unsupported radio command; nothing changed.";break;
                     default: response=complete(q);
+                    }
                 }
             }catch(Exception e){
                 response="Request failed: "+e.getMessage()+". Verify the radio or V3 engine is ready.";
             }
             final String answer=response;
+            try(ChannelDatabase db=new ChannelDatabase(this)){db.saveChatPair(q,answer);}
+            catch(Exception e){android.util.Log.w("RumiTX-Memory","Chat logging unavailable",e);}
             post("RUMITX  ·  "+answer);
             requestInFlight=false;
             main.post(()->{
@@ -259,6 +265,8 @@ public final class RumiAiActivity extends Activity {
             if(!radio.programChannel(c))
                 return "The radio did not acknowledge that channel. No successful change is confirmed.";
             getSharedPreferences("radio_session",0).edit().putLong("active_channel",c.id).apply();
+            try(ChannelDatabase db=new ChannelDatabase(this)){db.logFrequency(c.rxFreqMHz,c.txFreqMHz,c.rxCtcssHz,c.rxDcsCode,c.name);}
+            catch(Exception e){android.util.Log.w("RumiTX-Memory","Frequency logging unavailable",e);}
             return String.format(Locale.US,"Copy! Tuned to %s — RX %.4f MHz%s. Radio acknowledged programming; no transmission started.",
                 description,c.rxFreqMHz,c.isSplitFrequency()?String.format(Locale.US,", TX %.4f MHz",c.txFreqMHz):"");
         }catch(IllegalArgumentException e){
@@ -307,47 +315,77 @@ public final class RumiAiActivity extends Activity {
         }catch(Exception e){return "Couldn't search saved channels: "+e.getMessage();}
     }
 
-    /** For unsaved frequencies, program a TEMPORARY analog FM simplex profile.
-     * No database write; channel bank remains unchanged. No automatic PTT.
-     * TX is configured to the same frequency, so users must authorize any later transmission.
+    /** All proposed frequencies and tones have been validated by RadioIntentParser.
+     * UART acknowledgment is required. Voice never keys PTT.
      */
-    private String changeFrequency(double frequency){
-        if(!Double.isFinite(frequency)||frequency<400.0||frequency>470.0)
-            return "The S80's radio path accepts 400–470 MHz. No change was made.";
+    private String changeFrequency(RadioIntentParser.Intent intent){
+        double rx=intent.frequencyMHz,tx=intent.txFrequencyMHz;
+        if(!Double.isFinite(rx)||!Double.isFinite(tx)||rx<400||rx>470||tx<400||tx>470)
+            return "Frequency outside the S80's 400–470 MHz range. No change made.";
         RadioController radio=RadioController.getInstance();
         if(VoiceTxBridge.isTransmitting()||radio.isKeyed())
-            return "Radio is transmitting. Release PTT before tuning; no change was made.";
-        if(!radio.isConnected())
-            return "The S80 radio module isn't connected. No change was made.";
+            return "Release PTT before tuning. No change made.";
+        if(!radio.isConnected())return "The radio is disconnected. No change made.";
         try(ChannelDatabase db=new ChannelDatabase(this)){
-            Channel match=null;
-            for(Channel c:db.getAllChannels()){
-                if(Math.abs(c.rxFreqMHz-frequency)<=0.000005){
-                    if(match!=null)
-                        return String.format(Locale.US,"Several saved channels use %.4f MHz. Choose a channel by name or number; no change made.",frequency);
+            if(!intent.toneSpecified&&!intent.txSpecified){
+                Channel match=null;
+                for(Channel c:db.getAllChannels())if(Math.abs(c.rxFreqMHz-rx)<0.000005){
+                    if(match!=null)return "Multiple saved channels share that frequency. Please specify a channel name; no change made.";
                     match=c;
                 }
+                if(match!=null)return programSavedChannel(match,match.name);
             }
-            if(match!=null)return programSavedChannel(match,match.name);
-            // The user has explicitly asked to tune a specific frequency, not alter a saved channel.
-            // Use a neutral, temporary FM profile with tones OFF; don't infer a DMR talkgroup or PL code.
-            Channel temporary=new Channel();
-            temporary.id=0;
-            temporary.name=String.format(Locale.US,"V3 temporary %.4f",frequency);
-            temporary.isDigital=false;
-            temporary.rxFreqMHz=frequency;
-            temporary.txFreqMHz=frequency;
-            temporary.txCtcssHz=0;
-            temporary.rxCtcssHz=0;
-            temporary.txDcsCode=null;
-            temporary.rxDcsCode=null;
-            temporary.squelchLevel=1;
-            if(!radio.programChannel(temporary))
-                return String.format(Locale.US,"The radio did not acknowledge %.4f MHz. No success is confirmed.",frequency);
-            return String.format(Locale.US,"Copy! Radio acknowledged %.4f MHz. Temporary analog FM simplex, no PL tone. RX and TX are both set to %.4f MHz; no transmission was started. Only transmit if authorized.",frequency,frequency);
-        }catch(Exception e){
-            return "Couldn't tune to "+String.format(Locale.US,"%.4f",frequency)+" MHz: "+e.getMessage();
-        }
+            if(intent.plHz>0)ToneIndex.ctcss(intent.plHz);
+            if(intent.dcsCode!=null)ToneIndex.dcs(intent.dcsCode);
+            Channel temp=new Channel();
+            temp.id=0;temp.name=String.format(Locale.US,"V3 temporary %.4f",rx);
+            temp.isDigital=false;temp.rxFreqMHz=rx;temp.txFreqMHz=tx;
+            temp.rxCtcssHz=intent.plHz;temp.txCtcssHz=0;
+            temp.rxDcsCode=intent.dcsCode;temp.txDcsCode=null;
+            temp.squelchLevel=1;
+            if(!radio.programChannel(temp))
+                return "The S80 radio module did not acknowledge tuning; no success confirmed.";
+            getSharedPreferences("radio_session",0).edit().putLong("active_channel",-1).apply();
+            try{db.logFrequency(rx,tx,intent.plHz,intent.dcsCode,temp.name);}
+            catch(Exception e){android.util.Log.w("RumiTX-Memory","Frequency log failed",e);}
+            StringBuilder result=new StringBuilder(String.format(Locale.US,"Tuned: RX %.4f MHz, TX %.4f MHz",rx,tx));
+            if(intent.plHz>0)result.append(String.format(Locale.US,", RX PL %.1f Hz",intent.plHz));
+            else if(intent.dcsCode!=null)result.append(", RX DCS ").append(intent.dcsCode);
+            else result.append(", no PL/DCS");
+            result.append(". UART acknowledged. Temporary analog FM; no transmission started.");
+            return result.toString();
+        }catch(Exception e){return "Couldn't program radio: "+e.getMessage()+". No success confirmed.";}
+    }
+
+    /** Explicit memory and local frequency lookups do not require the LLM. */
+    private String handleKnowledgeCommand(String q){
+        String lower=q.toLowerCase(Locale.US).trim();
+        try(ChannelDatabase db=new ChannelDatabase(this)){
+            if(lower.startsWith("remember that ")||lower.startsWith("remember ")){
+                int cut=lower.startsWith("remember that ")?14:9;
+                String fact=q.substring(cut).trim();
+                if(fact.length()<3)return "Tell me what you want remembered.";
+                db.addMemory(fact);
+                return "I'll remember that. Ask me what I remember at any time.";
+            }
+            if(lower.equals("what do you remember")||lower.equals("what do you remember about me")||
+               lower.equals("show memories")||lower.equals("list memories"))return db.listMemories();
+            if(lower.startsWith("forget that ")||lower.startsWith("forget memory ")){
+                String term=q.substring(lower.startsWith("forget that ")?12:14).trim();
+                if(term.length()<3)return "Tell me which memory to forget.";
+                int erased=db.forgetMatching(term);
+                return erased==0?"I couldn't find that saved memory.":erased+" matching memory item(s) erased.";
+            }
+            if(lower.contains("tuning history")||lower.equals("recent frequencies")||lower.equals("last frequencies"))
+                return db.frequencyHistory();
+            if(lower.startsWith("what frequency is ")||lower.startsWith("frequency of ")){
+                String name=q.substring(lower.startsWith("what frequency is ")?18:13).trim().replaceAll("[?.!]+$","");
+                return db.savedChannelSummary(name);
+            }
+            if(lower.equals("what's in project nomad")||lower.equals("what is in project nomad"))
+                return "Project Nomad currently has "+db.nomadChunkCount()+" indexed searchable passages. Ask a specific question to search the content.";
+            return null;
+        }catch(Exception e){return "Local database is unavailable: "+e.getMessage();}
     }
 
     /** Recover conversational content from fine-tuning's JSON-shaped outputs.
