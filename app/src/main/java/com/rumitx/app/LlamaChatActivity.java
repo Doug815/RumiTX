@@ -304,15 +304,6 @@ public final class LlamaChatActivity extends Activity {
             }finally{setBusy(false);}
         });
     }
-    /** Replies to simple greetings locally to avoid spending minutes on trivial intents. */
-    static String quickGreeting(String question){
-        String q=question.toLowerCase(Locale.US).trim().replaceAll("[.!? ]+$","");
-        if(q.matches("(?:hi|hello|hey|hi there|hello there|hey there|good morning|good afternoon|good evening)"))
-            return "Hey there! I'm RumiTX. What would you like to talk about?";
-        if(q.matches("(?:how are you|how's it going|hows it going|how are you doing)"))
-            return "I'm here and ready! How's your day going?";
-        return null;
-    }
     /** Never expose radio fine-tuning JSON error schemas to normal chat users. */
     static String cleanAnswer(String raw){
         if(raw==null)return "I couldn't generate a reply. Please try again.";
@@ -401,7 +392,7 @@ public final class LlamaChatActivity extends Activity {
     }
     private void preview(String raw){
         long now=SystemClock.uptimeMillis();
-        latestPreview=cleanAnswer(raw);
+        latestPreview=raw.trim().startsWith("{")?"Composing an answer…":cleanAnswer(raw);
         if(now-lastNativePreview<140||previewPending)return;
         lastNativePreview=now;
         previewPending=true;
@@ -428,7 +419,7 @@ public final class LlamaChatActivity extends Activity {
                 if(intent.type!=RadioIntentParser.Type.CHAT){
                     reply=runRadioIntent(intent);
                 }else{
-                    reply=quickGreeting(question);
+                    reply=RumiChatRouter.greeting(question);
                     if(reply==null){
                         LlamaBridge nativeEngine;
                         synchronized(ENGINE_LOCK){nativeEngine=engine;}
