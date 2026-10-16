@@ -166,8 +166,8 @@ public final class RumiAiActivity extends Activity {
             setBusy(true);info("Reading repeater JSON and merging into SQLite…");
             io.execute(()->{
                 try{
-                    String result=RepeaterCatalogImporter.importJson(this,uri);
-                    info(result);post("RUMITX  ·  "+result);
+                    String importSummary=RepeaterCatalogImporter.importJson(this,uri);
+                    info(importSummary);post("RUMITX  ·  "+importSummary);
                 }catch(Exception e){info("Repeater import failed: "+e.getMessage());}
                 finally{main.post(()->setBusy(false));}
             });
