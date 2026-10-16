@@ -25,7 +25,7 @@ import java.util.zip.GZIPInputStream;
 
 /** RumiTX 2030 offline assistant, completely separate from the radio session. */
 public final class RumiAiActivity extends Activity {
-    private static final int PICK_RUNTIME=102, PICK_MODEL=103, PICK_NOMAD=104;
+    private static final int PICK_RUNTIME=102, PICK_MODEL=103, PICK_NOMAD=104, PICK_REPEATERS=105;
     private static final String MODEL_SHA="a9d99ed72848f0c26d2c380490108102aa19b47d565b192b7719e0d1f8832ba1";
     private static final String SYSTEM="You are RumiTX, a friendly, practical assistant. Answer the user's actual question in clear natural English, not JSON. Chat casually when chatting, explain step by step when asked, and use prior messages for context. Never guess technical facts or claim radio actions you did not perform.";
     // All hardware commands are parsed locally; chat model is never trusted to execute radio operations.
@@ -34,7 +34,7 @@ public final class RumiAiActivity extends Activity {
     private TextView status, transcript, setupHelp;
     private ScrollView chatScroll;
     private EditText message;
-    private Button run, send, packageButton, modelButton, micButton, voiceButton, resetButton, nomadButton, memoryButton;
+    private Button run, send, packageButton, modelButton, micButton, voiceButton, resetButton, nomadButton, memoryButton, repeaterButton;
     private RumiVoice voice;
     private TextView voiceStatus;
     private volatile boolean busy;
@@ -81,6 +81,9 @@ public final class RumiAiActivity extends Activity {
         knowledgeControls.addView(nomadButton,new LinearLayout.LayoutParams(0,dp(this,44),1));
         knowledgeControls.addView(memoryButton,new LinearLayout.LayoutParams(0,dp(this,44),1));
         outer.addView(knowledgeControls,full());
+        repeaterButton=button("IMPORT REPEATERS · JSON");
+        outer.addView(repeaterButton,new LinearLayout.LayoutParams(-1,dp(this,40)));
+        repeaterButton.setOnClickListener(v->pick(PICK_REPEATERS,"*/*"));
         nomadButton.setOnClickListener(v->{
             Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
@@ -90,7 +93,7 @@ public final class RumiAiActivity extends Activity {
             String summary;
             try(ChannelDatabase db=new ChannelDatabase(this)){
                 summary="SAVED AI MEMORIES\n"+db.listMemories()+"\n\nRECENT FREQUENCIES\n"+db.frequencyHistory()
-                    +"\n\nPROJECT NOMAD\n"+db.nomadChunkCount()+" indexed passages";
+                    +"\n\nPROJECT NOMAD\n"+db.nomadChunkCount()+" indexed passages" + "\n\nREPEATERS\n" + db.repeaterCount()+" catalog records";
             }catch(Exception e){summary="Database error: "+e.getMessage();}
             String display=summary;
             main.post(()->new android.app.AlertDialog.Builder(this).setTitle("RumiTX · Unified SQLite")
@@ -158,6 +161,18 @@ public final class RumiAiActivity extends Activity {
             });
             return;
         }
+        if(req==PICK_REPEATERS){
+            if(busy)return;
+            setBusy(true);info("Reading repeater JSON and merging into SQLite…");
+            io.execute(()->{
+                try{
+                    String result=RepeaterCatalogImporter.importJson(this,uri);
+                    info(result);post("RUMITX  ·  "+result);
+                }catch(Exception e){info("Repeater import failed: "+e.getMessage());}
+                finally{main.post(()->setBusy(false));}
+            });
+            return;
+        }
         if(req!=PICK_RUNTIME&&req!=PICK_MODEL)return;
         setBusy(true);
         io.execute(()->{
@@ -168,7 +183,7 @@ public final class RumiAiActivity extends Activity {
             finally{main.post(()->setBusy(false));}
         });
     }
-    private void setBusy(boolean v){busy=v;packageButton.setEnabled(!v);modelButton.setEnabled(!v);run.setEnabled(!v&&ready());send.setEnabled(!v&&ready());if(v)status.setText("Importing and verifying… keep RumiTX open.");}
+    private void setBusy(boolean v){busy=v;packageButton.setEnabled(!v);modelButton.setEnabled(!v);repeaterButton.setEnabled(!v);run.setEnabled(!v&&ready());send.setEnabled(!v&&ready());if(v)status.setText("Importing and verifying… keep RumiTX open.");}
     private static long tarOctal(byte[] hdr,int start,int width){long n=0;for(int i=start;i<start+width;i++){int c=hdr[i]&255;if(c>='0'&&c<='7')n=(n<<3)+(c-'0');else if(c!=0&&c!=' ')throw new IllegalArgumentException("Invalid TAR length");}return n;}
     private static String tarName(byte[] hdr,int start,int len){int end=start;while(end<start+len&&hdr[end]!=0)end++;return new String(hdr,start,end-start,java.nio.charset.StandardCharsets.US_ASCII);}
     private static void exact(InputStream in,byte[] b,int size)throws IOException{int offset=0;while(offset<size){int r=in.read(b,offset,size-offset);if(r<0)throw new EOFException("Truncated TAR");offset+=r;}}
@@ -361,6 +376,18 @@ public final class RumiAiActivity extends Activity {
     private String handleKnowledgeCommand(String q){
         String lower=q.toLowerCase(Locale.US).trim();
         try(ChannelDatabase db=new ChannelDatabase(this)){
+            if(lower.equals("how many repeaters")||lower.equals("repeater count")||
+               lower.equals("how many repeater frequencies"))
+                return "There are "+db.repeaterCount()+" repeaters in your local SQLite catalog.";
+            if(lower.startsWith("repeaters in ")||lower.startsWith("repeater in ")){
+                String search=q.substring(lower.startsWith("repeaters in ")?13:12).trim().replaceAll("[?.!]+$","");
+                return db.findRepeaters(search);
+            }
+            if(lower.startsWith("find repeater ")||lower.startsWith("look up repeater ")||
+               lower.startsWith("repeater callsign ")){
+                int n=lower.startsWith("find repeater ")?14:lower.startsWith("look up repeater ")?17:18;
+                return db.findRepeaters(q.substring(n).trim().replaceAll("[?.!]+$",""));
+            }
             if(lower.startsWith("remember that ")||lower.startsWith("remember ")){
                 int cut=lower.startsWith("remember that ")?14:9;
                 String fact=q.substring(cut).trim();
