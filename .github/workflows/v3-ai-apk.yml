@@ -22,6 +22,8 @@ jobs:
           mkdir -p /tmp/rumitx-parser-tests
           javac -d /tmp/rumitx-parser-tests app/src/main/java/com/rumitx/app/RadioIntentParser.java tools/RadioIntentParserTest.java
           java -cp /tmp/rumitx-parser-tests RadioIntentParserTest
+          javac -d /tmp/rumitx-parser-tests app/src/main/java/com/rumitx/app/RumiChatContext.java tools/RumiChatContextTest.java
+          java -cp /tmp/rumitx-parser-tests RumiChatContextTest
       - name: Android SDK 33
         shell: bash
         run: |
