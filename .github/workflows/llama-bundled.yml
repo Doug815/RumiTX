@@ -65,7 +65,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          javac -d .ci-tests app/src/main/java/com/rumitx/app/RadioIntentParser.java tools/tests/RadioIntentParserSmokeTest.java
+          javac -d .ci-tests app/src/main/java/com/rumitx/app/RadioIntentParser.java app/src/main/java/com/rumitx/app/RumiChatRouter.java tools/tests/RadioIntentParserSmokeTest.java
           java -cp .ci-tests com.rumitx.app.RadioIntentParserSmokeTest
           python3 - <<'PY'
           from pathlib import Path
@@ -78,7 +78,7 @@ jobs:
           assert 'nativeEngine.generateStreaming(' in a
           assert 'new String(bytes,StandardCharsets.UTF_8)' in a
           assert 'RadioIntentParser.parse(question)' in a
-          assert 'quickGreeting(question)' in a
+          assert 'RumiChatRouter.greeting(question)' in a
           assert 'voice=new RumiVoice(' in a and 'outer.addView(bottom)' in a
           assert 'MIC · TALK' in a and 'SPEAK: OFF' in a and 'scroller.fullScroll' in a
           assert '"<|im_start|>assistant\n<think>\n\n</think>\n\n"' not in a # source is Java-escaped
