@@ -27,7 +27,7 @@ import java.util.zip.GZIPInputStream;
 public final class RumiAiActivity extends Activity {
     private static final int PICK_RUNTIME=102, PICK_MODEL=103;
     private static final String MODEL_SHA="a9d99ed72848f0c26d2c380490108102aa19b47d565b192b7719e0d1f8832ba1";
-    private static final String SYSTEM="You are RumiTX, a friendly and knowledgeable companion. Chat naturally, answer questions with helpful detail, and remember the conversation. Never output JSON or pretend a radio command succeeded. Keep technical figures exact; if unsure, say so.";
+    private static final String SYSTEM="You are RumiTX, a friendly, practical assistant. Answer the user's actual question in clear natural English, not JSON. Chat casually when chatting, explain step by step when asked, and use prior messages for context. Never guess technical facts or claim radio actions you did not perform.";
     // All hardware commands are parsed locally; chat model is never trusted to execute radio operations.
     private final ExecutorService io=Executors.newSingleThreadExecutor();
     private final Handler main=new Handler();
@@ -304,40 +304,96 @@ public final class RumiAiActivity extends Activity {
         }
     }
 
-    /** Normalize simple text-only JSON learned by the fine-tuned model. */
+    /** Recover conversational content from fine-tuning's JSON-shaped outputs.
+     * Tool/intent payloads are not displayed as if they were an answer. */
+    private static String extractTextFromJson(Object value,int depth){
+        if(depth>4||value==null||value==JSONObject.NULL)return null;
+        if(value instanceof String){
+            String s=((String)value).trim();
+            if(s.isEmpty())return null;
+            if(s.startsWith("{")||s.startsWith("["))return plainAnswer(s);
+            return s;
+        }
+        if(value instanceof JSONObject){
+            JSONObject obj=(JSONObject)value;
+            for(String key:new String[]{"text","answer","reply","response","content","message","output","result","final","assistant","say"}){
+                Object item=obj.opt(key);
+                if(item==null||item==JSONObject.NULL)continue;
+                String found=extractTextFromJson(item,depth+1);
+                if(found!=null&&!found.isEmpty())return found;
+            }
+            return null;
+        }
+        if(value instanceof JSONArray){
+            JSONArray arr=(JSONArray)value;
+            for(int i=0;i<Math.min(arr.length(),8);i++){
+                String found=extractTextFromJson(arr.opt(i),depth+1);
+                if(found!=null)return found;
+            }
+        }
+        return null;
+    }
     private static String plainAnswer(String raw){
-        if(raw==null)return "No response received.";
-        String a=raw.replaceAll("(?s)<think>.*?</think>","").trim();
+        if(raw==null)return null;
+        String a=raw.replaceAll("(?s)<think>.*?</think>","")
+                .replaceAll("(?s)<\\|im_end\\|>.*$","").trim();
         if(a.startsWith("```")){
-            a=a.replaceFirst("(?s)^"+"```"+"(?:json)?\\s*","").replaceFirst("(?s)\\s*"+"```"+"$","").trim();
+            a=a.replaceFirst("(?s)^```(?:json)?\\s*","")
+               .replaceFirst("(?s)\\s*```$","").trim();
         }
-        if(a.startsWith("{")&&a.endsWith("}")){
+        if(a.isEmpty())return null;
+        if(a.startsWith("{")||a.startsWith("[")){
             try{
-                JSONObject j=new JSONObject(a);
-                for(String key:new String[]{"text","answer","reply","response","result","content"}){
-                    Object value=j.opt(key);
-                    if(value instanceof String&&!((String)value).trim().isEmpty())return ((String)value).trim();
-                }
-                return "The AI returned an unsupported structured response. Please rephrase.";
-            }catch(Exception ignored){}
+                String answer=extractTextFromJson(a.startsWith("{")?
+                        new JSONObject(a):new JSONArray(a),0);
+                return answer==null?null:answer.trim();
+            }catch(Exception e){return null;}
         }
-        return a.isEmpty()?"No response received.":a;
+        if(a.startsWith("<|")||a.startsWith("\"intent\"")||a.startsWith("\"tool\""))return null;
+        return a;
+    }
+
+    /** Retry structured-only answers once using a simpler chat request.
+     * This path never changes radio state. */
+    private String queryModel(String question,boolean conciseRetry)throws Exception{
+        String prompt;
+        if(conciseRetry){
+            prompt="<|im_start|>system\nAnswer conversationally in plain English. Never emit JSON or a tool call. If you don't know, say so.<|im_end|>\n"
+                    +"<|im_start|>user\n"+question.replace("<|im_","[im_")+"<|im_end|>\n<|im_start|>assistant\n";
+        }else{
+            prompt="<|im_start|>system\n"+SYSTEM+"<|im_end|>\n"+chatContext.render()
+                    +"<|im_start|>user\n"+question.replace("<|im_","[im_")+"<|im_end|>\n<|im_start|>assistant\n";
+        }
+        JSONObject req=new JSONObject();
+        req.put("prompt",prompt);
+        req.put("n_predict",question.toLowerCase(Locale.US).matches("(?s).*(detail|step by step|explain|how to|how do i).*")?192:144);
+        req.put("temperature",conciseRetry?0.15:0.35);
+        req.put("stop",new JSONArray().put("<|im_end|>").put("<|im_start|>"));
+        HttpURLConnection con=(HttpURLConnection)new URL("http://127.0.0.1:8080/completion").openConnection();
+        con.setRequestMethod("POST");con.setConnectTimeout(3500);con.setReadTimeout(180000);
+        con.setDoOutput(true);con.setRequestProperty("Content-Type","application/json");
+        try{
+            byte[] data=req.toString().getBytes("UTF-8");
+            try(OutputStream out=con.getOutputStream()){out.write(data);}
+            if(con.getResponseCode()!=200)throw new IOException("AI engine HTTP "+con.getResponseCode());
+            ByteArrayOutputStream sink=new ByteArrayOutputStream();
+            try(InputStream in=con.getInputStream()){
+                byte[] buf=new byte[8192];int n;
+                while((n=in.read(buf))!=-1){
+                    if(sink.size()+n>262144)throw new IOException("AI response too large");
+                    sink.write(buf,0,n);
+                }
+            }
+            return plainAnswer(new JSONObject(sink.toString("UTF-8")).optString("content",""));
+        }finally{con.disconnect();}
     }
     private String complete(String question)throws Exception{
-        JSONObject req=new JSONObject();String prompt="<|im_start|>system\n"+SYSTEM+"<|im_end|>\n"+chatContext.render()+"<|im_start|>user\n"+question.replace("<|im_","[im_")+"<|im_end|>\n<|im_start|>assistant\n";
-        req.put("prompt",prompt);req.put("n_predict",160);req.put("temperature",0.35);req.put("stop",new JSONArray().put("<|im_end|>"));
-        HttpURLConnection con=(HttpURLConnection)new URL("http://127.0.0.1:8080/completion").openConnection();
-        con.setRequestMethod("POST");con.setConnectTimeout(3500);con.setReadTimeout(180000);con.setDoOutput(true);con.setRequestProperty("Content-Type","application/json");
-        try{
-            byte[] data=req.toString().getBytes("UTF-8");try(OutputStream out=con.getOutputStream()){out.write(data);}
-            if(con.getResponseCode()!=200)throw new IOException("Engine HTTP "+con.getResponseCode());
-            ByteArrayOutputStream sink=new ByteArrayOutputStream();try(InputStream in=con.getInputStream()){byte[] buf=new byte[8192];int n;while((n=in.read(buf))!=-1){if(sink.size()+n>262144)throw new IOException("Response too large");sink.write(buf,0,n);}}
-            String answer=plainAnswer(new JSONObject(sink.toString("UTF-8")).optString("content",""));
-            if(answer.length()==0)answer="No response received.";
-            // Retain a rolling window of up to four conversational exchanges.
-            chatContext.add(question,answer);
-            return answer;
-        }finally{con.disconnect();}
+        String answer=queryModel(question,false);
+        if(answer==null)answer=queryModel(question,true);
+        if(answer==null)
+            return "I heard your question, but I couldn't generate a useful answer yet. Could you ask it a different way? The radio and voice controls are still working.";
+        chatContext.add(question,answer);
+        return answer;
     }
     @Override protected void onDestroy(){main.removeCallbacks(poll);if(voice!=null)voice.close();io.shutdownNow();super.onDestroy();}
 }
