@@ -27,14 +27,18 @@ import java.util.zip.GZIPInputStream;
 public final class RumiAiActivity extends Activity {
     private static final int PICK_RUNTIME=102, PICK_MODEL=103;
     private static final String MODEL_SHA="a9d99ed72848f0c26d2c380490108102aa19b47d565b192b7719e0d1f8832ba1";
-    private static final String SYSTEM="You are RumiTX, a helpful radio assistant. Answer directly and concisely. Never output JSON tool calls or function definitions. For radio commands like 'switch to channel 5', confirm the action briefly. For questions, give a direct answer.";
-    private static final Pattern CHANNEL=Pattern.compile("(?i)^\\s*(?:please\\s+)?(?:switch|change|go|tune|set)(?:\\s+(?:the\\s+)?radio)?\\s+to\\s+channel\\s+(\\d+)\\s*[.!]?\\s*$");
+    private static final String SYSTEM="You are RumiTX. Respond briefly in plain English, never JSON. Preserve numbers and frequencies exactly. Do not guess or claim radio actions succeeded. Only the app controls the radio.";
+    private static final Pattern CHANNEL=Pattern.compile("(?i)^\\s*(?:please\\s+)?(?:switch|change|go|tune|set)(?:\\s+(?:my|the))?(?:\\s+radio)?(?:\\s+to)?\\s+channel\\s+(\\d+)\\s*[.!]?\\s*$");
+    // Deterministic command parsing: never ask an LLM to decide whether radio hardware changed.
+    private static final Pattern FREQUENCY=Pattern.compile("(?i)^\\s*(?:please\\s+)?(?:tune|set|switch|change|program)(?:\\s+(?:my|the))?(?:\\s+(?:radio|receiver))?(?:\\s+to)?\\s+(?:frequency\\s+)?([0-9]{3}(?:\\.[0-9]{1,6})?)\\s*(?:mhz)?\\s*[.!]?\\s*$");
+    private static final Pattern COMMAND_START=Pattern.compile("(?i)^\\s*(?:please\\s+)?(?:tune|set|switch|change|program|transmit|key|ptt)\\b.*");
     private final ExecutorService io=Executors.newSingleThreadExecutor();
     private final Handler main=new Handler();
     private TextView status, transcript;
     private EditText message;
     private Button run, send, packageButton, modelButton;
-    private boolean busy;
+    private volatile boolean busy;
+    private volatile boolean requestInFlight;
     private String conversation="";
     private static int dp(Activity a,int d){return Math.round(d*a.getResources().getDisplayMetrics().density);}
     private TextView text(String s,int size,int color){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);t.setPadding(dp(this,8),dp(this,7),dp(this,8),dp(this,7));return t;}
@@ -61,7 +65,7 @@ public final class RumiAiActivity extends Activity {
         packageButton.setOnClickListener(v->pick(PICK_RUNTIME,"application/gzip"));
         modelButton.setOnClickListener(v->pick(PICK_MODEL,"*/*"));
         run.setOnClickListener(v->{if(!ready()){info("Import both files first.");return;}startForegroundService(new Intent(this,RumiAiService.class).setAction(RumiAiService.START));info("Starting the local V3 engine…");});
-        ScrollView scroll=new ScrollView(this);transcript=text("Offline radio assistant · ready for setup\n\n",15,0xffebf6fc);transcript.setTextIsSelectable(true);scroll.addView(transcript);
+        ScrollView scroll=new ScrollView(this);transcript=text("RumiTX 2030 · Offline radio assistant\n\n",15,0xffebf6fc);transcript.setTextIsSelectable(true);scroll.addView(transcript);
         outer.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
         message=new EditText(this);message.setTextColor(Color.WHITE);message.setHintTextColor(0xff829caf);message.setHint("Ask RumiTX…");message.setSingleLine(false);message.setMinLines(1);message.setMaxLines(3);message.setTextSize(15);
@@ -69,7 +73,7 @@ public final class RumiAiActivity extends Activity {
         send.setOnClickListener(v->ask());
         main.postDelayed(poll,400);
     }
-    private final Runnable poll=new Runnable(){public void run(){if(isFinishing())return;if(!busy){String state=RumiAiService.status();status.setText(ready()?"V3 runtime installed · "+state:"Setup needed · "+state);send.setEnabled(ready());run.setEnabled(ready());}main.postDelayed(this,1800);}};
+    private final Runnable poll=new Runnable(){public void run(){if(isFinishing())return;if(!busy){String state=RumiAiService.status();status.setText(ready()?"V3 runtime installed · "+state:"Setup needed · "+state);send.setEnabled(ready()&&!requestInFlight);run.setEnabled(ready());}main.postDelayed(this,1800);}};
     private void pick(int request,String type){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType(type);if(request==PICK_RUNTIME)i.setType("*/*");startActivityForResult(i,request);}
     @Override protected void onActivityResult(int req,int result,Intent data){super.onActivityResult(req,result,data);if(result!=RESULT_OK||data==null||data.getData()==null)return;Uri uri=data.getData();setBusy(true);io.execute(()->{
         try{if(req==PICK_RUNTIME)extractRuntime(uri);else if(req==PICK_MODEL)installModel(uri);info("Import successful. "+(ready()?"Start AI to run the model.":"Import the other file."));}
@@ -122,21 +126,25 @@ public final class RumiAiActivity extends Activity {
         info("Qwen3 V3 model verified with SHA-256.");
     }
     private void ask(){
-        String q=message.getText().toString().trim();if(q.length()==0||busy)return;message.setText("");
+        String q=message.getText().toString().trim();if(q.length()==0||busy||requestInFlight)return;requestInFlight=true;message.setText("");
         post("YOU  ·  "+q);send.setEnabled(false);
         io.execute(()->{
             String response;
             try{
-                Matcher command=CHANNEL.matcher(q);
-                if(command.matches())response=changeChannel(Integer.parseInt(command.group(1)));
+                Matcher channel=CHANNEL.matcher(q);
+                Matcher frequency=FREQUENCY.matcher(q);
+                if(channel.matches())response=changeChannel(Integer.parseInt(channel.group(1)));
+                else if(frequency.matches())response=changeFrequency(Double.parseDouble(frequency.group(1)));
+                else if(COMMAND_START.matcher(q).matches())response="I can't execute that radio command yet. Try 'switch to channel 5' or 'tune my radio to frequency 460.2500'. No radio change was made.";
                 else response=complete(q);
-            }catch(Exception e){response="V3 unavailable: "+e.getMessage()+". Check that the AI service says READY.";}
-            post("RUMITX  ·  "+response);main.post(()->send.setEnabled(ready()));
+            }catch(Exception e){response="Request failed: "+e.getMessage()+". Verify the radio or V3 engine is ready.";}
+            post("RUMITX  ·  "+response);
+            requestInFlight=false;main.post(()->send.setEnabled(ready()));
         });
     }
     private String changeChannel(int index){
         if(index<1||index>999)return "Channel number is outside the supported range.";
-        if(VoiceTxBridge.isTransmitting())return "Cannot change channels during voice transmission.";
+        if(VoiceTxBridge.isTransmitting()||RadioController.getInstance().isKeyed())return "Cannot change channels during transmission.";
         if(!RadioController.getInstance().isConnected())return "Radio is not connected.";
         try(ChannelDatabase db=new ChannelDatabase(this)){
             List<Channel> channels=db.getAllChannels();if(index>channels.size())return "Channel "+index+" is not in your saved channel bank.";
@@ -147,16 +155,62 @@ public final class RumiAiActivity extends Activity {
             return "Switched to channel "+index+": "+c.name+".";
         }catch(Exception e){return "Could not change channel: "+e.getMessage();}
     }
+    /** An arbitrary RF frequency is not a complete TX/RX/CTCSS/DMR profile.
+     * Only select an already configured, user-saved channel with an exact RX match.
+     * Never invent an associated TX frequency or start transmitting. */
+    private String changeFrequency(double frequency){
+        if(!Double.isFinite(frequency)||frequency<400.0||frequency>470.0)
+            return "Frequency must be within the S80's 400–470 MHz radio range. No change made.";
+        RadioController radio=RadioController.getInstance();
+        if(VoiceTxBridge.isTransmitting()||radio.isKeyed())
+            return "Radio is transmitting; wait until PTT is released. No change made.";
+        if(!radio.isConnected())return "Radio is not connected. No change made.";
+        try(ChannelDatabase db=new ChannelDatabase(this)){
+            Channel match=null;
+            for(Channel ch:db.getAllChannels()){
+                if(Math.abs(ch.rxFreqMHz-frequency)<=0.000005){
+                    if(match!=null)return "More than one saved channel receives "+String.format(Locale.US,"%.4f",frequency)+" MHz. Select a channel by number; no change made.";
+                    match=ch;
+                }
+            }
+            if(match==null)return String.format(Locale.US,"%.4f MHz is not in your saved channel bank. Configure a channel first; no radio change was made.",frequency);
+            String blocked=com.rumitx.app.repeaters.RepeaterProfiles.blockedChannel(match);
+            if(blocked!=null)return "Channel programming blocked: "+blocked+". No change made.";
+            if(!radio.programChannel(match))return "The radio did not acknowledge the channel change. No success is confirmed.";
+            getSharedPreferences("radio_session",0).edit().putLong("active_channel",match.id).apply();
+            return String.format(Locale.US,"Radio tuned to saved channel %s, RX %.4f MHz. No transmission started.",match.name,match.rxFreqMHz);
+        }catch(Exception e){return "Could not tune the radio: "+e.getMessage();}
+    }
+
+    /** Normalize simple text-only JSON learned by the fine-tuned model. */
+    private static String plainAnswer(String raw){
+        if(raw==null)return "No response received.";
+        String a=raw.replaceAll("(?s)<think>.*?</think>","").trim();
+        if(a.startsWith("```")){
+            a=a.replaceFirst("(?s)^"+"```"+"(?:json)?\\s*","").replaceFirst("(?s)\\s*"+"```"+"$","").trim();
+        }
+        if(a.startsWith("{")&&a.endsWith("}")){
+            try{
+                JSONObject j=new JSONObject(a);
+                for(String key:new String[]{"text","answer","reply","response","result","content"}){
+                    Object value=j.opt(key);
+                    if(value instanceof String&&!((String)value).trim().isEmpty())return ((String)value).trim();
+                }
+                return "The AI returned an unsupported structured response. Please rephrase.";
+            }catch(Exception ignored){}
+        }
+        return a.isEmpty()?"No response received.":a;
+    }
     private String complete(String question)throws Exception{
         JSONObject req=new JSONObject();String prompt="<|im_start|>system\n"+SYSTEM+"<|im_end|>\n"+conversation+"<|im_start|>user\n"+question+"<|im_end|>\n<|im_start|>assistant\n";
-        req.put("prompt",prompt);req.put("n_predict",128);req.put("temperature",0.3);req.put("stop",new JSONArray().put("<|im_end|>"));
+        req.put("prompt",prompt);req.put("n_predict",96);req.put("temperature",0.1);req.put("stop",new JSONArray().put("<|im_end|>"));
         HttpURLConnection con=(HttpURLConnection)new URL("http://127.0.0.1:8080/completion").openConnection();
         con.setRequestMethod("POST");con.setConnectTimeout(3500);con.setReadTimeout(180000);con.setDoOutput(true);con.setRequestProperty("Content-Type","application/json");
         try{
             byte[] data=req.toString().getBytes("UTF-8");try(OutputStream out=con.getOutputStream()){out.write(data);}
             if(con.getResponseCode()!=200)throw new IOException("Engine HTTP "+con.getResponseCode());
             ByteArrayOutputStream sink=new ByteArrayOutputStream();try(InputStream in=con.getInputStream()){byte[] buf=new byte[8192];int n;while((n=in.read(buf))!=-1){if(sink.size()+n>262144)throw new IOException("Response too large");sink.write(buf,0,n);}}
-            String answer=new JSONObject(sink.toString("UTF-8")).optString("content","").replaceAll("(?s)<think>.*?</think>","").trim();
+            String answer=plainAnswer(new JSONObject(sink.toString("UTF-8")).optString("content",""));
             if(answer.length()==0)answer="No response received.";
             // Retain only the latest conversational exchange to limit S80 context usage.
             String safeQ=question.replace("<|im_","[im_"),safeA=answer.replace("<|im_","[im_");
