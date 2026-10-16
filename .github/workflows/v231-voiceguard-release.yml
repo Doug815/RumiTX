@@ -1,0 +1,84 @@
+name: RumiTX v2.3.1 Voice TX Guard Release Candidate
+on:
+  push:
+    branches:
+      - build/v2.3.1-voiceguard-release-candidate
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install Android SDK platform
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n1)"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-28" "build-tools;33.0.2"
+      - name: Setup Gradle 7.5
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "7.5"
+      - name: Verify exact release metadata and Voice TX guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'versionCode 20301031' app/build.gradle
+          grep -F 'versionName "2.3.1"' app/build.gradle
+          grep -F 'applicationId "com.rumitx.app"' app/build.gradle
+          grep -F 'VoiceTxBridge.isTransmitting()' app/src/main/java/com/rumitx/app/PttDispatcher.java
+          grep -F 'VoiceTxBridge.isTransmitting()' app/src/main/java/com/rumitx/app/MainActivity.java
+          grep -F 'Voice TX in progress' app/src/main/java/com/rumitx/app/MainActivity.java
+          if grep -q 'android:debuggable="true"' app/src/main/AndroidManifest.xml; then
+            echo "Refusing a debuggable release APK" >&2
+            exit 1
+          fi
+      - name: Build unsigned release and debug APK
+        run: gradle --no-daemon --stacktrace :app:assembleRelease :app:assembleDebug -x lintVitalRelease
+      - name: Verify package metadata and stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release-unsigned.apk dist/RumiTX-v2.3.1-release-UNSIGNED.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/RumiTX-v2.3.1-debug-CI.apk
+          cp tools/sign_v231_for_s80.sh dist/sign_v231_for_s80.sh
+          BADGING="$ANDROID_HOME/build-tools/33.0.2/aapt"
+          "$BADGING" dump badging dist/RumiTX-v2.3.1-release-UNSIGNED.apk > dist/APK_BADGING.txt
+          head -n1 dist/APK_BADGING.txt
+          grep -F "package: name='com.rumitx.app' versionCode='20301031' versionName='2.3.1'" dist/APK_BADGING.txt
+          (cd dist && sha256sum *.apk > SHA256SUMS.txt)
+          cat > dist/README.txt <<'EOF'
+          RumiTX v2.3.1 Voice TX Guard Release Candidate
+          Source: branch build/v2.3.1-voiceguard-release-candidate
+          Original commit: 20e036638d31461142b095bb373244a8a8fbe3b2
+          PACKAGE: com.rumitx.app
+          VERSION CODE: 20301031
+          VERSION NAME: 2.3.1
+          
+          Unsigned release APK MUST be signed on the owner's ThinkPad with
+          ~/rumitx-work/signing/local-debug.keystore and compared against the
+          signing certificate of the previously installed signed APK.
+          Use sign_v231_for_s80.sh for this. DO NOT use the CI debug APK as
+          an in-place update (wrong signing certificate).
+          
+          This CI does NOT have the owner's private signing key or S80 USB/ADB.
+          Android device integration and Voice TX guard tests are NOT run.
+          Do not uninstall a newer installed app: old 20301031 will not update
+          an app with higher versionCode such as 20301047.
+          EOF
+      - name: Upload unsigned release candidate and QA notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: rumitx-v231-voiceguard-unsigned-release
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
