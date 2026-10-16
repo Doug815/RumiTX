@@ -36,9 +36,26 @@ cmake -S .ci-llama -B .ci-llama/build-s80 -G Ninja \
   -DLLAMA_BUILD_SERVER=OFF
 cmake --build .ci-llama/build-s80 --target llama -j 3
 for name in libllama.so libggml.so libggml-base.so libggml-cpu.so; do
-  srcfile="$(find .ci-llama/build-s80 -type f -name "$name" -print -quit)"
+  srcfile="$(find .ci-llama/build-s80 \( -type f -o -type l \) -name "$name" -print -quit)"
   [[ -n "$srcfile" ]] || { echo "Required shared library missing: $name" >&2; exit 3; }
   cp -L "$srcfile" "$NATIVE/$name"
+done
+# Linux CMake sometimes uses versioned SONAMEs such as libllama.so.0.
+# Android APK nativeLibraryDir packages only unversioned *.so filenames.
+# Normalize SONAME and NEEDED entries to unversioned names before linking JNI.
+for library in "$NATIVE"/*.so; do
+  base="$(basename "$library")"
+  patchelf --set-soname "$base" "$library"
+done
+for library in "$NATIVE"/*.so; do
+  for dependency in $(patchelf --print-needed "$library"); do
+    case "$dependency" in
+      libllama.so.*) patchelf --replace-needed "$dependency" "libllama.so" "$library";;
+      libggml.so.*) patchelf --replace-needed "$dependency" "libggml.so" "$library";;
+      libggml-base.so.*) patchelf --replace-needed "$dependency" "libggml-base.so" "$library";;
+      libggml-cpu.so.*) patchelf --replace-needed "$dependency" "libggml-cpu.so" "$library";;
+    esac
+  done
 done
 cmake -S app/src/main/cpp -B .ci-llama/build-jni -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
