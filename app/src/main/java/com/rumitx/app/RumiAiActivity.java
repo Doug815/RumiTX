@@ -25,7 +25,7 @@ import java.util.zip.GZIPInputStream;
 
 /** RumiTX 2030 offline assistant, completely separate from the radio session. */
 public final class RumiAiActivity extends Activity {
-    private static final int PICK_RUNTIME=102, PICK_MODEL=103;
+    private static final int PICK_RUNTIME=102, PICK_MODEL=103, PICK_NOMAD=104;
     private static final String MODEL_SHA="a9d99ed72848f0c26d2c380490108102aa19b47d565b192b7719e0d1f8832ba1";
     private static final String SYSTEM="You are RumiTX, a friendly, practical assistant. Answer the user's actual question in clear natural English, not JSON. Chat casually when chatting, explain step by step when asked, and use prior messages for context. Never guess technical facts or claim radio actions you did not perform.";
     // All hardware commands are parsed locally; chat model is never trusted to execute radio operations.
@@ -34,7 +34,7 @@ public final class RumiAiActivity extends Activity {
     private TextView status, transcript, setupHelp;
     private ScrollView chatScroll;
     private EditText message;
-    private Button run, send, packageButton, modelButton, micButton, voiceButton, resetButton;
+    private Button run, send, packageButton, modelButton, micButton, voiceButton, resetButton, nomadButton, memoryButton;
     private RumiVoice voice;
     private TextView voiceStatus;
     private volatile boolean busy;
@@ -76,6 +76,26 @@ public final class RumiAiActivity extends Activity {
         voiceControls.addView(voiceButton,new LinearLayout.LayoutParams(0,dp(this,46),1));
         voiceControls.addView(resetButton,new LinearLayout.LayoutParams(0,dp(this,46),1));
         outer.addView(voiceControls,full());
+        LinearLayout knowledgeControls=new LinearLayout(this);knowledgeControls.setOrientation(LinearLayout.HORIZONTAL);
+        nomadButton=button("NOMAD SD");memoryButton=button("MEMORY + RADIO");
+        knowledgeControls.addView(nomadButton,new LinearLayout.LayoutParams(0,dp(this,44),1));
+        knowledgeControls.addView(memoryButton,new LinearLayout.LayoutParams(0,dp(this,44),1));
+        outer.addView(knowledgeControls,full());
+        nomadButton.setOnClickListener(v->{
+            Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION|Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(intent,PICK_NOMAD);
+        });
+        memoryButton.setOnClickListener(v->io.execute(()->{
+            String summary;
+            try(ChannelDatabase db=new ChannelDatabase(this)){
+                summary="SAVED AI MEMORIES\n"+db.listMemories()+"\n\nRECENT FREQUENCIES\n"+db.frequencyHistory()
+                    +"\n\nPROJECT NOMAD\n"+db.nomadChunkCount()+" indexed passages";
+            }catch(Exception e){summary="Database error: "+e.getMessage();}
+            String display=summary;
+            main.post(()->new android.app.AlertDialog.Builder(this).setTitle("RumiTX · Unified SQLite")
+                .setMessage(display).setPositiveButton("Close",null).show());
+        }));
         voiceStatus=text("Tap MIC to speak. Android's speech service may use the network; the AI model runs locally.",11,0xff9baec2);
         outer.addView(voiceStatus,full());
         voice=new RumiVoice(this,new RumiVoice.Callback(){
@@ -108,20 +128,46 @@ public final class RumiAiActivity extends Activity {
         resetButton.setOnClickListener(v->{
             if(requestInFlight){voiceStatus.setText("Wait for the current answer before starting a new chat.");return;}
             chatContext.clear();
+            io.execute(()->{try(ChannelDatabase db=new ChannelDatabase(this)){db.clearChat();}catch(Exception ignored){}});
             transcript.setText("RumiTX 2030 · New conversation started.\n\n");
             voice.stopSpeech();
             voiceStatus.setText("Conversation cleared. Radio settings unchanged.");
         });
         send.setOnClickListener(v->ask());
+        io.execute(()->{
+            try(ChannelDatabase db=new ChannelDatabase(this)){db.loadRecentChat(chatContext);}
+            catch(Exception e){android.util.Log.w("RumiTX-Memory","Unable to restore chat history",e);}
+        });
         main.postDelayed(poll,400);
     }
     private final Runnable poll=new Runnable(){public void run(){if(isFinishing())return;if(!busy){String state=RumiAiService.status();status.setText(ready()?"V3 runtime installed · "+state:"Setup needed · "+state);setupHelp.setVisibility(ready()?View.GONE:View.VISIBLE);send.setEnabled(ready()&&!requestInFlight);micButton.setEnabled(ready()&&!requestInFlight&&!busy);run.setEnabled(ready());}main.postDelayed(this,1800);}};
     private void pick(int request,String type){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType(type);if(request==PICK_RUNTIME)i.setType("*/*");startActivityForResult(i,request);}
-    @Override protected void onActivityResult(int req,int result,Intent data){super.onActivityResult(req,result,data);if(result!=RESULT_OK||data==null||data.getData()==null)return;Uri uri=data.getData();setBusy(true);io.execute(()->{
-        try{if(req==PICK_RUNTIME)extractRuntime(uri);else if(req==PICK_MODEL)installModel(uri);info("Import successful. "+(ready()?"Start AI to run the model.":"Import the other file."));}
-        catch(Exception e){info("Import failed: "+e.getMessage());}
-        finally{main.post(()->setBusy(false));}
-    });}
+    @Override protected void onActivityResult(int req,int result,Intent data){
+        super.onActivityResult(req,result,data);
+        if(result!=RESULT_OK||data==null||data.getData()==null)return;
+        Uri uri=data.getData();
+        if(req==PICK_NOMAD){
+            try{
+                getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                getSharedPreferences("rumitx_nomad",0).edit().putString("sd_tree_uri",uri.toString()).apply();
+            }catch(Exception e){info("SD permission error: "+e.getMessage());return;}
+            info("Indexing Project Nomad text from selected SD folder…");
+            io.execute(()->{
+                try{info(NomadIndexer.index(this,uri));}
+                catch(Exception e){info("Nomad index failed: "+e.getMessage());}
+            });
+            return;
+        }
+        if(req!=PICK_RUNTIME&&req!=PICK_MODEL)return;
+        setBusy(true);
+        io.execute(()->{
+            try{
+                if(req==PICK_RUNTIME)extractRuntime(uri);else installModel(uri);
+                info("Import successful. "+(ready()?"Start AI to run the model.":"Import the other file."));
+            }catch(Exception e){info("Import failed: "+e.getMessage());}
+            finally{main.post(()->setBusy(false));}
+        });
+    }
     private void setBusy(boolean v){busy=v;packageButton.setEnabled(!v);modelButton.setEnabled(!v);run.setEnabled(!v&&ready());send.setEnabled(!v&&ready());if(v)status.setText("Importing and verifying… keep RumiTX open.");}
     private static long tarOctal(byte[] hdr,int start,int width){long n=0;for(int i=start;i<start+width;i++){int c=hdr[i]&255;if(c>='0'&&c<='7')n=(n<<3)+(c-'0');else if(c!=0&&c!=' ')throw new IllegalArgumentException("Invalid TAR length");}return n;}
     private static String tarName(byte[] hdr,int start,int len){int end=start;while(end<start+len&&hdr[end]!=0)end++;return new String(hdr,start,end-start,java.nio.charset.StandardCharsets.US_ASCII);}
