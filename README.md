@@ -6,8 +6,7 @@
 ### An open replacement for the DOOGEE S80 stock Talkie app
 
 ---
-> **Note on source code:** The release APK was built from a newer source tree than what's currently committed to this repository. The public source is missing the 2030 holographic UI (it has stock Material Light instead), SMS screens, auto-power management, and the Discovery results list is unfinished. The screenshots and feature descriptions below reflect the release APK. Updated source will be committed when available.
----
+
 
 ## The Problem
 
@@ -61,7 +60,7 @@ RumiTX is a from-scratch rebuild of the S80's radio interface, reverse-engineere
 - **DMR text messaging** — Pending UART probe to verify module data-frame support
 - **ATAK integration** — CoT position sharing, repeater markers, team messaging
 
-## 🧠 RUMI AI — Local Radio Intelligence (Coming Soon)
+## 🧠 RUMI AI — Local Radio Intelligence (Working!)
 
 **Talk to your radio. It understands.**
 
@@ -90,6 +89,23 @@ We're training a custom AI model that runs entirely on-device — no cloud, no i
 The model is a fine-tuned Qwen2.5 (0.5B parameters — tiny, fast, runs on the S80) trained specifically on radio commands and amateur radio knowledge. A deterministic safety validator independently checks every command against your channel plan and authorizations before anything touches RF hardware. The AI proposes, the validator gates, you confirm.
 
 **No cloud. No subscription. No data leaves your device.**
+
+### Download the V3 Model
+
+The V3 AI model (Qwen3-1.7B, Q4_K_M, 1.1 GB) is ready:
+**https://drive.google.com/file/d/1xVuMrUCNjA5W-OVy8lpBIHOlOCeOnwti/view?usp=sharing**
+
+1. Download the GGUF file (1.1 GB)
+2. Copy to phone: /sdcard/RumiTX/v3_model.gguf
+3. RumiTX > Settings > AI Model > select the file
+4. Runs entirely on-device, no internet needed
+
+SHA-256: a9d99ed72848f0c26d2c380490108102aa19b47d565b192b7719e0d1f8832ba1
+
+### Voice TX Bridge (Working!)
+
+Say "transmit [message] on [frequency]" and the app converts your
+speech to DMR digital and broadcasts it. DMR digital only.
 
 ### Sneak Peek
 
