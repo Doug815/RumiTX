@@ -19,7 +19,7 @@ public class ChannelDatabase extends SQLiteOpenHelper {
 
     private final Context featureContext;
     private static final String DB_NAME = "rumitx.db";
-    private static final int DB_VERSION = 3;
+    private static final int DB_VERSION = 4;
     private static final String TABLE = "channels";
 
     public ChannelDatabase(Context ctx) {
@@ -47,6 +47,7 @@ public class ChannelDatabase extends SQLiteOpenHelper {
                 + ")");
         createKnowledgeTables(db);
         createRepeaterCatalog(db);
+        RumiChatStore.createTables(db);
     }
 
     private static void createKnowledgeTables(SQLiteDatabase db){
@@ -86,6 +87,7 @@ public class ChannelDatabase extends SQLiteOpenHelper {
     public void onUpgrade(SQLiteDatabase db, int oldV, int newV) {
         if(oldV<2)createKnowledgeTables(db); // Preserve existing channels unmodified.
         if(oldV<3)createRepeaterCatalog(db); // Add catalog; never modify channel rows.
+        if(oldV<4){ RumiChatStore.createTables(db); RumiChatStore.migrateLegacy(db); }
     }
 
     public long saveChannel(Channel ch) {
@@ -284,6 +286,75 @@ public class ChannelDatabase extends SQLiteOpenHelper {
         return hits==0?"No repeaters match '"+q+"' in the imported catalog.":
             out.toString()+(hits==15?"\nShowing the first 15. Narrow the search.":"")+
             "\nPublished repeater listings; TX offset magnitude is not supplied, and transmit setup is NOT inferred.";
+    }
+
+    /** Query a repeater catalog directly before invoking the small language model. */
+    public String answerRepeaterQuestion(String question){
+        if(question==null)return null;
+        String q=question.trim().toLowerCase(java.util.Locale.US);
+        boolean aboutRepeater=q.contains("repeater")||q.contains("repeaters")||q.contains("repeater frequency")||q.contains("callsign");
+        // Answer narrowly; explanatory radio theory questions still go to AI.
+        if(!aboutRepeater || q.matches(".*\\b(?:how do|how does|why do|explain|what is a|what are)\\b.*"))return null;
+        if(q.matches(".*\\b(?:how many|number of|count|total)\\b.*") && !q.matches(".*\\b(?:in|near|around)\\b.*")){
+            return "Your local repeater catalog contains "+repeaterCount()+" listings across Illinois, Indiana and Wisconsin.";
+        }
+        java.util.regex.Matcher call=java.util.regex.Pattern.compile("\\b[a-z]{1,3}[0-9][a-z0-9]{1,4}\\b").matcher(q);
+        if(call.find())return findRepeaters(call.group());
+        // Find a city actually represented in the SQLite catalog; never guess from the LLM.
+        String chosen=null;
+        try(Cursor cur=getReadableDatabase().rawQuery("SELECT DISTINCT city FROM repeater_catalog ORDER BY LENGTH(city) DESC",null)){
+            while(cur.moveToNext()){
+                String city=cur.getString(0).toLowerCase(java.util.Locale.US);
+                if(city.length()<3)continue;
+                String base=city.split(",")[0].trim();
+                if(base.length()>=3 && q.matches("(?s).*\\b"+java.util.regex.Pattern.quote(base)+"\\b.*")){
+                    chosen=base;break;
+                }
+            }
+        }
+        if(chosen!=null)return findRepeaters(chosen);
+        java.util.regex.Matcher loc=java.util.regex.Pattern.compile("\\b(?:in|near|around|for|at)\\s+([a-z][a-z '\\-]{2,35})").matcher(q);
+        if(loc.find()){
+            String candidate=loc.group(1).trim().replaceAll("\\s+(?:right now|today|please|that i can use)$","");
+            return findRepeaters(candidate);
+        }
+        if(q.contains("list")||q.contains("show")||q.contains("find")||q.contains("where"))
+            return "I have "+repeaterCount()+" imported repeater listings. Name a city or callsign, such as 'repeaters in Rockford' or 'find repeater K9RFD'.";
+        return null;
+    }
+
+    /** Retrieve relevant explicit memories and historical chat snippets. Never return arbitrary text as an instruction. */
+    public String retrieveDurableMemory(String question,long activeThread){
+        String q=question==null?"":question.toLowerCase(java.util.Locale.US);
+        String[] tokens=q.replaceAll("[^a-z0-9 ]"," ").split("\\s+");
+        java.util.LinkedHashSet<String> terms=new java.util.LinkedHashSet<>();
+        java.util.Set<String> stop=new java.util.HashSet<>(java.util.Arrays.asList("remember","what","where","when","tell","that","this","with","your","have","about","from","could","would","should","please","know","want","did","said","before","last","talked","conversation","chat","which","does","there","many","much","some","they","them","then","into","make","give"));
+        for(String w:tokens)if(w.length()>=3&&!stop.contains(w))terms.add(w);
+        if(terms.isEmpty())return "";
+        String bestFact="",bestChat="";int bestFactScore=0,bestChatScore=0;
+        try(Cursor c=getReadableDatabase().rawQuery("SELECT fact FROM ai_memories ORDER BY _id DESC LIMIT 250",null)){
+            while(c.moveToNext()){
+                String item=c.getString(0);
+                int pts=score(item,terms);
+                if(pts>bestFactScore){bestFactScore=pts;bestFact=item;}
+            }
+        }
+        try(Cursor c=getReadableDatabase().rawQuery(
+                "SELECT user_text,assistant_text FROM chat_messages WHERE thread_id<>? ORDER BY _id DESC LIMIT 350",
+                new String[]{Long.toString(activeThread)})){
+            while(c.moveToNext()){
+                String user=c.getString(0),answer=c.getString(1);
+                int pts=score(user,terms)*2+score(answer,terms);
+                if(pts>bestChatScore){bestChatScore=pts;bestChat=user+" → "+answer;}
+            }
+        }
+        StringBuilder result=new StringBuilder();
+        if(bestFactScore>0)result.append("Stored fact: ").append(bestFact.substring(0,Math.min(220,bestFact.length())));
+        if(bestChatScore>=2){
+            if(result.length()>0)result.append("\n");
+            result.append("Prior conversation: ").append(bestChat.substring(0,Math.min(300,bestChat.length())));
+        }
+        return result.toString();
     }
 
 }
