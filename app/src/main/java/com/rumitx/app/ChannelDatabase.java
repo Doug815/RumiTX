@@ -19,7 +19,7 @@ public class ChannelDatabase extends SQLiteOpenHelper {
 
     private final Context featureContext;
     private static final String DB_NAME = "rumitx.db";
-    private static final int DB_VERSION = 2;
+    private static final int DB_VERSION = 3;
     private static final String TABLE = "channels";
 
     public ChannelDatabase(Context ctx) {
@@ -46,6 +46,7 @@ public class ChannelDatabase extends SQLiteOpenHelper {
                 + "squelch INTEGER DEFAULT 4"
                 + ")");
         createKnowledgeTables(db);
+        createRepeaterCatalog(db);
     }
 
     private static void createKnowledgeTables(SQLiteDatabase db){
@@ -57,9 +58,34 @@ public class ChannelDatabase extends SQLiteOpenHelper {
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_chat_created ON ai_chat_pairs(created_at)");
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_frequency_created ON frequency_history(created_at)");
     }
+    private static void createRepeaterCatalog(SQLiteDatabase db){
+        db.execSQL("CREATE TABLE IF NOT EXISTS repeater_catalog ("+
+                "_id INTEGER PRIMARY KEY AUTOINCREMENT,"+
+                "source_key TEXT NOT NULL UNIQUE,"+
+                "callsign TEXT NOT NULL DEFAULT '',"+
+                "frequency REAL NOT NULL,"+
+                "offset TEXT NOT NULL DEFAULT '',"+
+                "pl_tone TEXT,"+
+                "mode TEXT NOT NULL DEFAULT '',"+
+                "city TEXT NOT NULL,"+
+                "state TEXT NOT NULL,"+
+                "status TEXT NOT NULL,"+
+                "alt_modes TEXT NOT NULL DEFAULT '',"+
+                "ctcss_hz REAL,"+
+                "dcs_code TEXT,"+
+                "dmr_color_code INTEGER,"+
+                "p25_nac TEXT,"+
+                "nxdn_ran INTEGER,"+
+                "import_source TEXT NOT NULL DEFAULT 'user_json',"+
+                "CHECK(frequency BETWEEN 400 AND 470))");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_repeater_state_city ON repeater_catalog(state,city)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_repeater_callsign ON repeater_catalog(callsign)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_repeater_frequency ON repeater_catalog(frequency)");
+    }
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldV, int newV) {
         if(oldV<2)createKnowledgeTables(db); // Preserve existing channels unmodified.
+        if(oldV<3)createRepeaterCatalog(db); // Add catalog; never modify channel rows.
     }
 
     public long saveChannel(Channel ch) {
@@ -225,6 +251,39 @@ public class ChannelDatabase extends SQLiteOpenHelper {
             if(out.length()>750)break;
         }
         return out.length()==0?"No saved channel matches "+requested+".":out.toString();
+    }
+
+    public int repeaterCount(){
+        try(Cursor c=getReadableDatabase().rawQuery("SELECT COUNT(*) FROM repeater_catalog",null)){
+            return c.moveToFirst()?c.getInt(0):0;
+        }
+    }
+    /** Metadata query only: no offset is inferred and no radio is programmed. */
+    public String findRepeaters(String query){
+        String q=query==null?"":query.trim();
+        if(q.length()<2||q.length()>100)return "Specify a city, callsign, or frequency to search.";
+        String term="%"+q.replace("%","").replace("_","")+"%";
+        StringBuilder out=new StringBuilder();
+        int hits=0;
+        try(Cursor c=getReadableDatabase().rawQuery(
+           "SELECT callsign,frequency,offset,pl_tone,mode,city,state,status,alt_modes "+
+           "FROM repeater_catalog WHERE callsign LIKE ? OR city LIKE ? OR state LIKE ? "+
+           "OR CAST(frequency AS TEXT) LIKE ? ORDER BY CASE WHEN city LIKE ? THEN 0 ELSE 1 END,city,callsign LIMIT 15",
+           new String[]{term,term,term,term,term})){
+            while(c.moveToNext()){
+                if(out.length()>0)out.append("\n");
+                String call=c.getString(0),tone=c.getString(3),alt=c.getString(8);
+                out.append(String.format(java.util.Locale.US,"%s %.5f MHz, %s %s, %s",
+                    (call==null||call.length()==0)?"Unlisted call":call,c.getDouble(1),c.getString(5),c.getString(6),c.getString(7)));
+                out.append(" · offset ").append(c.getString(2).length()==0?"not specified":c.getString(2));
+                if(tone!=null&&!tone.isEmpty())out.append(" · access ").append(tone);
+                if(alt!=null&&!alt.isEmpty())out.append(" · ").append(alt);
+                hits++;
+            }
+        }
+        return hits==0?"No repeaters match '"+q+"' in the imported catalog.":
+            out.toString()+(hits==15?"\nShowing the first 15. Narrow the search.":"")+
+            "\nPublished repeater listings; TX offset magnitude is not supplied, and transmit setup is NOT inferred.";
     }
 
 }
