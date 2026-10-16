@@ -449,16 +449,17 @@ public final class LlamaChatActivity extends Activity {
             try{
                 // Local fact questions bypass the model completely: <15s target
                 // even on slow S80 hardware, with no invented repeater details.
-                RepeaterQuestion request=RepeaterQuestion.parse(question);
-                if(request!=null){
-                    RepeaterLocalSearch.Answer result=
-                        RepeaterLocalSearch.search(getApplicationContext(),request);
-                    repeaterPromptContext=result.promptContext;
-                    reply=result.reply;
+                RadioIntentParser.Intent intent=RadioIntentParser.parse(question);
+                if(intent.type!=RadioIntentParser.Type.CHAT){
+                    // Explicit tuning and channel commands must take priority.
+                    reply=runRadioIntent(intent);
                 } else {
-                    RadioIntentParser.Intent intent=RadioIntentParser.parse(question);
-                    if(intent.type!=RadioIntentParser.Type.CHAT){
-                        reply=runRadioIntent(intent);
+                    RepeaterQuestion request=RepeaterQuestion.parse(question);
+                    if(request!=null){
+                        RepeaterLocalSearch.Answer result=
+                            RepeaterLocalSearch.search(getApplicationContext(),request);
+                        repeaterPromptContext=result.promptContext;
+                        reply=result.reply;
                     } else {
                         reply=RumiChatRouter.greeting(question);
                         if(reply==null){
