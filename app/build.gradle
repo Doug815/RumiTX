@@ -9,8 +9,8 @@ android {
         applicationId "com.rumitx.app"
         minSdkVersion 26  // Android 8.0 (S80 runs 8.1)
         targetSdkVersion 27
-        versionCode 20301042
-        versionName "2.3.1-v3-direct-tuning"
+        versionCode 20301043
+        versionName "2.3.1-v3-natural-voice-chat"
     }
 
     buildTypes {
