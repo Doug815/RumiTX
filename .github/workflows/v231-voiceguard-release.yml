@@ -41,6 +41,8 @@ jobs:
             echo "Refusing a debuggable release APK" >&2
             exit 1
           fi
+      - name: Compile-only S80 HIDL signature stubs
+        run: bash tools/build_hidl_compile_stubs.sh
       - name: Build unsigned release and debug APK
         run: gradle --no-daemon --stacktrace :app:assembleRelease :app:assembleDebug -x lintVitalRelease
       - name: Verify package metadata and stage
