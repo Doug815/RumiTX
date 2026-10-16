@@ -383,37 +383,53 @@ public final class RumiAiActivity extends Activity {
     }
     private void ask(){
         final String q=message.getText().toString().trim();
-        if(q.length()==0||busy||requestInFlight)return;
+        final long threadId=activeThreadId;
+        if(q.isEmpty()||busy||requestInFlight||threadId<=0)return;
         requestInFlight=true;
         message.setText("");
         post("YOU  ·  "+q);
-        send.setEnabled(false);
+        setThinking(true);
+        send.setEnabled(false);micButton.setEnabled(false);
         io.execute(()->{
             String response;
+            long rowId=0;
+            try(ChannelDatabase db=new ChannelDatabase(this)){
+                rowId=RumiChatStore.beginTurn(db.getWritableDatabase(),threadId,q);
+            }catch(Exception e){
+                android.util.Log.e("RumiTX-Chats","Could not persist question",e);
+            }
             try{
                 String knowledge=handleKnowledgeCommand(q);
                 if(knowledge!=null)response=knowledge;
                 else{
                     RadioIntentParser.Intent intent=RadioIntentParser.parse(q);
                     switch(intent.type){
-                    case CHANNEL_NUMBER: response=changeChannel(intent.channelNumber);break;
-                    case FREQUENCY: response=changeFrequency(intent);break;
-                    case CHANNEL_NAME: response=changeChannelByName(intent.channelName);break;
-                    case UNSUPPORTED: response=intent.error!=null?intent.error:"Unsupported radio command; nothing changed.";break;
-                    default: response=complete(q);
+                        case CHANNEL_NUMBER:response=changeChannel(intent.channelNumber);break;
+                        case FREQUENCY:response=changeFrequency(intent);break;
+                        case CHANNEL_NAME:response=changeChannelByName(intent.channelName);break;
+                        case UNSUPPORTED:response=intent.error!=null?intent.error:"Unsupported radio command; nothing changed.";break;
+                        default:response=complete(q);
                     }
                 }
             }catch(Exception e){
-                response="Request failed: "+e.getMessage()+". Verify the radio or V3 engine is ready.";
+                response="I couldn't finish that request: "+e.getMessage();
+                android.util.Log.w("RumiTX-AI","Request error",e);
             }
             final String answer=response;
-            try(ChannelDatabase db=new ChannelDatabase(this)){db.saveChatPair(q,answer);}
-            catch(Exception e){android.util.Log.w("RumiTX-Memory","Chat logging unavailable",e);}
+            if(rowId>0){
+                try(ChannelDatabase db=new ChannelDatabase(this)){
+                    RumiChatStore.finishTurn(db.getWritableDatabase(),rowId,answer);
+                }catch(Exception e){android.util.Log.e("RumiTX-Chats","Could not persist reply",e);}
+            }
+            chatContext.add(q,answer);
             post("RUMITX  ·  "+answer);
             requestInFlight=false;
             main.post(()->{
-                send.setEnabled(ready());
-                micButton.setEnabled(ready());
+                if(isFinishing())return;
+                setThinking(false);
+                send.setEnabled(ready());micButton.setEnabled(ready());
+                if("New conversation".contentEquals(chatLabel.getText()))
+                    chatLabel.setText(q.length()>52?q.substring(0,52)+"…":q);
                 if(voice!=null)voice.say(answer);
             });
         });
@@ -529,6 +545,8 @@ public final class RumiAiActivity extends Activity {
     private String handleKnowledgeCommand(String q){
         String lower=q.toLowerCase(Locale.US).trim();
         try(ChannelDatabase db=new ChannelDatabase(this)){
+            String catalog=db.answerRepeaterQuestion(q);
+            if(catalog!=null)return catalog;
             // Additional conversational phrasings for existing catalog lookups.
             int cityPhrase=lower.indexOf("repeaters in ");
             if(cityPhrase>0){
@@ -672,8 +690,7 @@ public final class RumiAiActivity extends Activity {
         if(answer==null)answer=queryModel(question,true);
         if(answer==null)
             return "I heard your question, but I couldn't generate a useful answer yet. Could you ask it a different way? The radio and voice controls are still working.";
-        chatContext.add(question,answer);
         return answer;
     }
-    @Override protected void onDestroy(){main.removeCallbacks(poll);if(voice!=null)voice.close();io.shutdownNow();super.onDestroy();}
+    @Override protected void onDestroy(){main.removeCallbacks(poll);main.removeCallbacks(thinkingTick);if(radioAnimation!=null)radioAnimation.setActive(false);if(voice!=null)voice.close();io.shutdownNow();super.onDestroy();}
 }
