@@ -1,14 +1,17 @@
 apply plugin: 'com.android.application'
 
 android {
-    compileSdkVersion 28
+    // Newer compile SDK required by AndroidX; Android 8.1 min/target unchanged.
+    lintOptions { disable 'ExpiredTargetSdkVersion' }
+    compileSdkVersion 33
 
     defaultConfig {
         applicationId "com.rumitx.app"
         minSdkVersion 26  // Android 8.0 (S80 runs 8.1)
         targetSdkVersion 27
-        versionCode 20301031
-        versionName "2.3.1"
+        ndk { abiFilters 'arm64-v8a' }
+        versionCode 20301048
+        versionName "2.3.2-llama-bundled"
     }
 
     buildTypes {
@@ -27,6 +30,8 @@ android {
 }
 
 dependencies {
+    // HIDL APIs are provided by Android 8.1 firmware; never bundled.
+    compileOnly files('libs/hidl-compile-stubs.jar')
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'org.mapsforge:mapsforge-map-android:0.25.0'
     implementation 'org.mapsforge:mapsforge-themes:0.25.0'
