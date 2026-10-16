@@ -123,7 +123,7 @@ public class MainActivity extends Activity {
                 // Update active channel's squelch and reprogram
                 if (activeChannel != null) {
                     activeChannel.squelchLevel = level;
-                    db.saveChannel(activeChannel);
+                    if(activeChannel.id>0)db.saveChannel(activeChannel);
                     final Channel channel=activeChannel;
                     commands.execute(() -> radio.programChannel(channel));
                     Toast.makeText(MainActivity.this,
