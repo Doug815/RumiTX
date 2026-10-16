@@ -294,7 +294,7 @@ public class ChannelDatabase extends SQLiteOpenHelper {
         String q=question.trim().toLowerCase(java.util.Locale.US);
         boolean aboutRepeater=q.contains("repeater")||q.contains("repeaters")||q.contains("repeater frequency")||q.contains("callsign");
         // Answer narrowly; explanatory radio theory questions still go to AI.
-        if(!aboutRepeater || q.matches(".*\\b(?:how do|how does|why do|explain|what is a|what are)\\b.*"))return null;
+        if(!aboutRepeater || q.matches(".*\\b(?:how do repeaters work|how does a repeater work|what is a repeater|explain how repeaters work)\\b.*"))return null;
         if(q.matches(".*\\b(?:how many|number of|count|total)\\b.*") && !q.matches(".*\\b(?:in|near|around)\\b.*")){
             return "Your local repeater catalog contains "+repeaterCount()+" listings across Illinois, Indiana and Wisconsin.";
         }
