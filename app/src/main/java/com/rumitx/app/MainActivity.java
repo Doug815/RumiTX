@@ -248,6 +248,9 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         statusUi.removeCallbacks(statusRefresh);statusUi.post(statusRefresh);
+        // Show radio parameters programmed by the AI, including temporary RX/TX splits.
+        Channel current=RadioController.getInstance().currentChannel();
+        if(current!=null){activeChannel=current;updateActiveChannel(current);}
         refreshChannelList(); // in case channels were added/edited
         ((TextView)findViewById(R.id.dmr_identity)).setText(DmrIdentity.label(this));
     }
