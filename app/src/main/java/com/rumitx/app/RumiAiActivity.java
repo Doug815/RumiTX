@@ -7,6 +7,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.view.Gravity;
+import android.os.SystemClock;
 import android.view.View;
 import android.widget.*;
 import org.json.JSONArray;
@@ -34,17 +35,36 @@ public final class RumiAiActivity extends Activity {
     private TextView status, transcript, setupHelp;
     private ScrollView chatScroll;
     private EditText message;
-    private Button run, send, packageButton, modelButton, micButton, voiceButton, resetButton, nomadButton, memoryButton, repeaterButton;
+    private Button run, send, packageButton, modelButton, micButton, voiceButton, resetButton, nomadButton, memoryButton, repeaterButton, chatsButton, optionsButton;
+    private volatile long activeThreadId;
+    private long thinkingStarted;
+    private RumiThinkingView radioAnimation;
+    private TextView thinkingLabel, chatLabel;
     private RumiVoice voice;
     private TextView voiceStatus;
     private volatile boolean busy;
     private volatile boolean requestInFlight;
     private final RumiChatContext chatContext=new RumiChatContext();
+    private final Runnable thinkingTick=new Runnable(){
+        @Override public void run(){
+            if(!requestInFlight||isFinishing())return;
+            thinkingLabel.setText("RUMI IS THINKING  ·  "+Math.max(0,(SystemClock.uptimeMillis()-thinkingStarted)/1000)+"s");
+            main.postDelayed(this,1000);
+        }
+    };
+    private void setThinking(boolean on){
+        if(radioAnimation==null)return;
+        radioAnimation.setActive(on);
+        thinkingLabel.setVisibility(on?View.VISIBLE:View.GONE);
+        main.removeCallbacks(thinkingTick);
+        if(on){thinkingStarted=SystemClock.uptimeMillis();thinkingLabel.setText("RUMI IS THINKING  ·  0s");main.postDelayed(thinkingTick,1000);}
+    }
+    private void scrollLatest(){chatScroll.post(()->{chatScroll.fullScroll(View.FOCUS_DOWN);chatScroll.smoothScrollTo(0,transcript.getBottom());});}
     private static int dp(Activity a,int d){return Math.round(d*a.getResources().getDisplayMetrics().density);}
     private TextView text(String s,int size,int color){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);t.setPadding(dp(this,8),dp(this,7),dp(this,8),dp(this,7));return t;}
     private Button button(String label){Button b=new Button(this);b.setText(label);b.setAllCaps(false);b.setTextSize(12);return b;}
     private LinearLayout.LayoutParams full(){return new LinearLayout.LayoutParams(-1,-2);}
-    private void post(String s){main.post(()->{transcript.append(s+"\n\n");chatScroll.post(()->chatScroll.fullScroll(View.FOCUS_DOWN));});}
+    private void post(String s){main.post(()->{if(isFinishing())return;transcript.append(s+"\n\n");scrollLatest();});}
     private void info(String s){main.post(()->status.setText(s));}
     private File runtime(){return new File(getFilesDir(),"llama-server");}
     private File omp(){return new File(getFilesDir(),"libomp.so");}
@@ -53,20 +73,39 @@ public final class RumiAiActivity extends Activity {
     @Override public void onCreate(Bundle state){
         super.onCreate(state);
         getWindow().setStatusBarColor(Color.rgb(7,13,23));
+        getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         LinearLayout outer=new LinearLayout(this);outer.setOrientation(LinearLayout.VERTICAL);outer.setPadding(dp(this,12),dp(this,8),dp(this,12),dp(this,10));outer.setBackgroundColor(Color.rgb(7,13,23));
         setContentView(outer);
-        TextView title=text("RUMITX  /  2030  /  V3 OFFLINE AI",18,0xff00e6ff);outer.addView(title,full());
+        LinearLayout top=new LinearLayout(this);top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title=text("RUMITX  /  2030",17,0xff00e6ff);
+        top.addView(title,new LinearLayout.LayoutParams(0,-2,1));
+        chatsButton=button("☰ Chats");optionsButton=button("⋮");
+        optionsButton.setTextSize(22);
+        top.addView(chatsButton,new LinearLayout.LayoutParams(dp(this,96),dp(this,44)));
+        top.addView(optionsButton,new LinearLayout.LayoutParams(dp(this,44),dp(this,44)));
+        outer.addView(top,full());
+        chatLabel=text("Loading conversations…",11,0xff84b4c8);
+        chatLabel.setSingleLine(true);chatLabel.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        outer.addView(chatLabel,full());
+        chatsButton.setOnClickListener(v->showChats());
+        optionsButton.setOnClickListener(v->showOptions());
         status=text("Checking local AI runtime…",12,0xffffc76b);outer.addView(status,full());
         setupHelp=text("First use: import v3-phone-package.tar.gz, then Qwen3-1.7B.Q4_K_M.gguf from Downloads or Drive. Both remain private on this phone; no cloud inference.",11,0xffa9bece);outer.addView(setupHelp,full());
         LinearLayout controls=new LinearLayout(this);controls.setOrientation(LinearLayout.HORIZONTAL);
         packageButton=button("1 · Runtime");modelButton=button("2 · Model");run=button("Start AI");
         for(Button b:new Button[]{packageButton,modelButton,run})controls.addView(b,new LinearLayout.LayoutParams(0,dp(this,48),1));
-        outer.addView(controls,full());
+        // Setup controls live in the overflow menu to maximize conversation area.
         packageButton.setOnClickListener(v->pick(PICK_RUNTIME,"application/gzip"));
         modelButton.setOnClickListener(v->pick(PICK_MODEL,"*/*"));
         run.setOnClickListener(v->{if(!ready()){info("Import both files first.");return;}startForegroundService(new Intent(this,RumiAiService.class).setAction(RumiAiService.START));info("Starting the local V3 engine…");});
         chatScroll=new ScrollView(this);transcript=text("RumiTX 2030 · Offline radio assistant\n\n",15,0xffebf6fc);transcript.setTextIsSelectable(true);chatScroll.addView(transcript);
         outer.addView(chatScroll,new LinearLayout.LayoutParams(-1,0,1));
+        radioAnimation=new RumiThinkingView(this);
+        outer.addView(radioAnimation,new LinearLayout.LayoutParams(-1,dp(this,47)));
+        thinkingLabel=text("RUMI IS THINKING",10,0xff00e6ff);
+        thinkingLabel.setVisibility(View.GONE);
+        thinkingLabel.setGravity(Gravity.CENTER);
+        outer.addView(thinkingLabel,full());
         LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
         message=new EditText(this);message.setTextColor(Color.WHITE);message.setHintTextColor(0xff829caf);message.setHint("Ask RumiTX…");message.setSingleLine(false);message.setMinLines(1);message.setMaxLines(3);message.setTextSize(15);
         row.addView(message,new LinearLayout.LayoutParams(0,-2,1));send=button("Send");row.addView(send,new LinearLayout.LayoutParams(dp(this,73),dp(this,54)));outer.addView(row,full());
@@ -75,14 +114,14 @@ public final class RumiAiActivity extends Activity {
         voiceControls.addView(micButton,new LinearLayout.LayoutParams(0,dp(this,46),1));
         voiceControls.addView(voiceButton,new LinearLayout.LayoutParams(0,dp(this,46),1));
         voiceControls.addView(resetButton,new LinearLayout.LayoutParams(0,dp(this,46),1));
-        outer.addView(voiceControls,full());
+        // Voice and new-chat controls live in the overflow menu.
         LinearLayout knowledgeControls=new LinearLayout(this);knowledgeControls.setOrientation(LinearLayout.HORIZONTAL);
         nomadButton=button("NOMAD SD");memoryButton=button("MEMORY + RADIO");
         knowledgeControls.addView(nomadButton,new LinearLayout.LayoutParams(0,dp(this,44),1));
         knowledgeControls.addView(memoryButton,new LinearLayout.LayoutParams(0,dp(this,44),1));
-        outer.addView(knowledgeControls,full());
+        // Nomad and database controls live in the overflow menu.
         repeaterButton=button("IMPORT REPEATERS · JSON");
-        outer.addView(repeaterButton,new LinearLayout.LayoutParams(-1,dp(this,40)));
+        // Repeater import is available from the overflow menu.
         repeaterButton.setOnClickListener(v->pick(PICK_REPEATERS,"*/*"));
         nomadButton.setOnClickListener(v->{
             Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
