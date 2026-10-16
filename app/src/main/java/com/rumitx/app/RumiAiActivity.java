@@ -28,13 +28,11 @@ public final class RumiAiActivity extends Activity {
     private static final int PICK_RUNTIME=102, PICK_MODEL=103;
     private static final String MODEL_SHA="a9d99ed72848f0c26d2c380490108102aa19b47d565b192b7719e0d1f8832ba1";
     private static final String SYSTEM="You are RumiTX. Respond briefly in plain English, never JSON. Preserve numbers and frequencies exactly. Do not guess or claim radio actions succeeded. Only the app controls the radio.";
-    private static final Pattern CHANNEL=Pattern.compile("(?i)^\\s*(?:please\\s+)?(?:switch|change|go|tune|set)(?:\\s+(?:my|the))?(?:\\s+radio)?(?:\\s+to)?\\s+channel\\s+(\\d+)\\s*[.!]?\\s*$");
-    // Deterministic command parsing: never ask an LLM to decide whether radio hardware changed.
-    private static final Pattern FREQUENCY=Pattern.compile("(?i)^\\s*(?:please\\s+)?(?:tune|set|switch|change|program)(?:\\s+(?:my|the))?(?:\\s+(?:radio|receiver))?(?:\\s+to)?\\s+(?:frequency\\s+)?([0-9]{3}(?:\\.[0-9]{1,6})?)\\s*(?:mhz)?\\s*[.!]?\\s*$");
-    private static final Pattern COMMAND_START=Pattern.compile("(?i)^\\s*(?:please\\s+)?(?:tune|set|switch|change|program|transmit|key|ptt)\\b.*");
+    // All hardware commands are parsed locally; chat model is never trusted to execute radio operations.
     private final ExecutorService io=Executors.newSingleThreadExecutor();
     private final Handler main=new Handler();
-    private TextView status, transcript;
+    private TextView status, transcript, setupHelp;
+    private ScrollView chatScroll;
     private EditText message;
     private Button run, send, packageButton, modelButton;
     private volatile boolean busy;
@@ -44,7 +42,7 @@ public final class RumiAiActivity extends Activity {
     private TextView text(String s,int size,int color){TextView t=new TextView(this);t.setText(s);t.setTextSize(size);t.setTextColor(color);t.setPadding(dp(this,8),dp(this,7),dp(this,8),dp(this,7));return t;}
     private Button button(String label){Button b=new Button(this);b.setText(label);b.setAllCaps(false);b.setTextSize(12);return b;}
     private LinearLayout.LayoutParams full(){return new LinearLayout.LayoutParams(-1,-2);}
-    private void post(String s){main.post(()->{transcript.append(s+"\n\n");});}
+    private void post(String s){main.post(()->{transcript.append(s+"\n\n");chatScroll.post(()->chatScroll.fullScroll(View.FOCUS_DOWN));});}
     private void info(String s){main.post(()->status.setText(s));}
     private File runtime(){return new File(getFilesDir(),"llama-server");}
     private File omp(){return new File(getFilesDir(),"libomp.so");}
@@ -57,7 +55,7 @@ public final class RumiAiActivity extends Activity {
         setContentView(outer);
         TextView title=text("RUMITX  /  2030  /  V3 OFFLINE AI",18,0xff00e6ff);outer.addView(title,full());
         status=text("Checking local AI runtime…",12,0xffffc76b);outer.addView(status,full());
-        TextView help=text("First use: import v3-phone-package.tar.gz, then Qwen3-1.7B.Q4_K_M.gguf from Downloads or Drive. Both remain private on this phone; no cloud inference.",11,0xffa9bece);outer.addView(help,full());
+        setupHelp=text("First use: import v3-phone-package.tar.gz, then Qwen3-1.7B.Q4_K_M.gguf from Downloads or Drive. Both remain private on this phone; no cloud inference.",11,0xffa9bece);outer.addView(setupHelp,full());
         LinearLayout controls=new LinearLayout(this);controls.setOrientation(LinearLayout.HORIZONTAL);
         packageButton=button("1 · Runtime");modelButton=button("2 · Model");run=button("Start AI");
         for(Button b:new Button[]{packageButton,modelButton,run})controls.addView(b,new LinearLayout.LayoutParams(0,dp(this,48),1));
@@ -65,15 +63,15 @@ public final class RumiAiActivity extends Activity {
         packageButton.setOnClickListener(v->pick(PICK_RUNTIME,"application/gzip"));
         modelButton.setOnClickListener(v->pick(PICK_MODEL,"*/*"));
         run.setOnClickListener(v->{if(!ready()){info("Import both files first.");return;}startForegroundService(new Intent(this,RumiAiService.class).setAction(RumiAiService.START));info("Starting the local V3 engine…");});
-        ScrollView scroll=new ScrollView(this);transcript=text("RumiTX 2030 · Offline radio assistant\n\n",15,0xffebf6fc);transcript.setTextIsSelectable(true);scroll.addView(transcript);
-        outer.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        chatScroll=new ScrollView(this);transcript=text("RumiTX 2030 · Offline radio assistant\n\n",15,0xffebf6fc);transcript.setTextIsSelectable(true);chatScroll.addView(transcript);
+        outer.addView(chatScroll,new LinearLayout.LayoutParams(-1,0,1));
         LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
         message=new EditText(this);message.setTextColor(Color.WHITE);message.setHintTextColor(0xff829caf);message.setHint("Ask RumiTX…");message.setSingleLine(false);message.setMinLines(1);message.setMaxLines(3);message.setTextSize(15);
         row.addView(message,new LinearLayout.LayoutParams(0,-2,1));send=button("Send");row.addView(send,new LinearLayout.LayoutParams(dp(this,73),dp(this,54)));outer.addView(row,full());
         send.setOnClickListener(v->ask());
         main.postDelayed(poll,400);
     }
-    private final Runnable poll=new Runnable(){public void run(){if(isFinishing())return;if(!busy){String state=RumiAiService.status();status.setText(ready()?"V3 runtime installed · "+state:"Setup needed · "+state);send.setEnabled(ready()&&!requestInFlight);run.setEnabled(ready());}main.postDelayed(this,1800);}};
+    private final Runnable poll=new Runnable(){public void run(){if(isFinishing())return;if(!busy){String state=RumiAiService.status();status.setText(ready()?"V3 runtime installed · "+state:"Setup needed · "+state);setupHelp.setVisibility(ready()?View.GONE:View.VISIBLE);send.setEnabled(ready()&&!requestInFlight);run.setEnabled(ready());}main.postDelayed(this,1800);}};
     private void pick(int request,String type){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType(type);if(request==PICK_RUNTIME)i.setType("*/*");startActivityForResult(i,request);}
     @Override protected void onActivityResult(int req,int result,Intent data){super.onActivityResult(req,result,data);if(result!=RESULT_OK||data==null||data.getData()==null)return;Uri uri=data.getData();setBusy(true);io.execute(()->{
         try{if(req==PICK_RUNTIME)extractRuntime(uri);else if(req==PICK_MODEL)installModel(uri);info("Import successful. "+(ready()?"Start AI to run the model.":"Import the other file."));}
@@ -126,60 +124,135 @@ public final class RumiAiActivity extends Activity {
         info("Qwen3 V3 model verified with SHA-256.");
     }
     private void ask(){
-        String q=message.getText().toString().trim();if(q.length()==0||busy||requestInFlight)return;requestInFlight=true;message.setText("");
-        post("YOU  ·  "+q);send.setEnabled(false);
+        final String q=message.getText().toString().trim();
+        if(q.length()==0||busy||requestInFlight)return;
+        requestInFlight=true;
+        message.setText("");
+        post("YOU  ·  "+q);
+        send.setEnabled(false);
         io.execute(()->{
             String response;
             try{
-                Matcher channel=CHANNEL.matcher(q);
-                Matcher frequency=FREQUENCY.matcher(q);
-                if(channel.matches())response=changeChannel(Integer.parseInt(channel.group(1)));
-                else if(frequency.matches())response=changeFrequency(Double.parseDouble(frequency.group(1)));
-                else if(COMMAND_START.matcher(q).matches())response="I can't execute that radio command yet. Try 'switch to channel 5' or 'tune my radio to frequency 460.2500'. No radio change was made.";
-                else response=complete(q);
-            }catch(Exception e){response="Request failed: "+e.getMessage()+". Verify the radio or V3 engine is ready.";}
+                RadioIntentParser.Intent intent=RadioIntentParser.parse(q);
+                switch(intent.type){
+                    case CHANNEL_NUMBER: response=changeChannel(intent.channelNumber);break;
+                    case FREQUENCY: response=changeFrequency(intent.frequencyMHz);break;
+                    case CHANNEL_NAME: response=changeChannelByName(intent.channelName);break;
+                    case UNSUPPORTED: response="I can switch saved channels and tune frequencies, but can't perform that radio action yet. No change was made.";break;
+                    default: response=complete(q);
+                }
+            }catch(Exception e){
+                response="Request failed: "+e.getMessage()+". Verify the radio or V3 engine is ready.";
+            }
             post("RUMITX  ·  "+response);
-            requestInFlight=false;main.post(()->send.setEnabled(ready()));
+            requestInFlight=false;
+            main.post(()->send.setEnabled(ready()));
         });
     }
-    private String changeChannel(int index){
-        if(index<1||index>999)return "Channel number is outside the supported range.";
-        if(VoiceTxBridge.isTransmitting()||RadioController.getInstance().isKeyed())return "Cannot change channels during transmission.";
-        if(!RadioController.getInstance().isConnected())return "Radio is not connected.";
-        try(ChannelDatabase db=new ChannelDatabase(this)){
-            List<Channel> channels=db.getAllChannels();if(index>channels.size())return "Channel "+index+" is not in your saved channel bank.";
-            Channel c=channels.get(index-1);String blocked=com.rumitx.app.repeaters.RepeaterProfiles.blockedChannel(c);
-            if(blocked!=null)return "Channel change blocked: "+blocked;
-            if(!RadioController.getInstance().programChannel(c))return "The radio did not accept channel "+index+".";
-            getSharedPreferences("radio_session",0).edit().putLong("active_channel",c.id).apply();
-            return "Switched to channel "+index+": "+c.name+".";
-        }catch(Exception e){return "Could not change channel: "+e.getMessage();}
-    }
-    /** An arbitrary RF frequency is not a complete TX/RX/CTCSS/DMR profile.
-     * Only select an already configured, user-saved channel with an exact RX match.
-     * Never invent an associated TX frequency or start transmitting. */
-    private String changeFrequency(double frequency){
-        if(!Double.isFinite(frequency)||frequency<400.0||frequency>470.0)
-            return "Frequency must be within the S80's 400–470 MHz radio range. No change made.";
+
+    /** Only a positive module acknowledgement counts as successful programming. */
+    private String programSavedChannel(Channel c,String description){
         RadioController radio=RadioController.getInstance();
         if(VoiceTxBridge.isTransmitting()||radio.isKeyed())
-            return "Radio is transmitting; wait until PTT is released. No change made.";
-        if(!radio.isConnected())return "Radio is not connected. No change made.";
+            return "Radio is transmitting. Release PTT before tuning; nothing changed.";
+        if(!radio.isConnected())
+            return "The S80 radio module is disconnected. No change was made.";
+        String blocked=com.rumitx.app.repeaters.RepeaterProfiles.blockedChannel(c);
+        if(blocked!=null)
+            return "Can't tune that channel: "+blocked+". No change made.";
+        try{
+            if(!radio.programChannel(c))
+                return "The radio did not acknowledge that channel. No successful change is confirmed.";
+            getSharedPreferences("radio_session",0).edit().putLong("active_channel",c.id).apply();
+            return String.format(Locale.US,"Copy! Tuned to %s — RX %.4f MHz%s. Radio acknowledged programming; no transmission started.",
+                description,c.rxFreqMHz,c.isSplitFrequency()?String.format(Locale.US,", TX %.4f MHz",c.txFreqMHz):"");
+        }catch(IllegalArgumentException e){
+            return "Can't program the channel: "+e.getMessage()+". No change made.";
+        }
+    }
+
+    private String changeChannel(int index){
+        if(index<1||index>999)return "Channel number is outside the supported range.";
         try(ChannelDatabase db=new ChannelDatabase(this)){
-            Channel match=null;
-            for(Channel ch:db.getAllChannels()){
-                if(Math.abs(ch.rxFreqMHz-frequency)<=0.000005){
-                    if(match!=null)return "More than one saved channel receives "+String.format(Locale.US,"%.4f",frequency)+" MHz. Select a channel by number; no change made.";
-                    match=ch;
+            List<Channel> channels=db.getAllChannels();
+            if(index>channels.size())return "Channel "+index+" isn't in your saved bank ("+channels.size()+" saved). No change was made.";
+            Channel c=channels.get(index-1);
+            return programSavedChannel(c,"channel "+index+" ("+c.name+")");
+        }catch(Exception e){return "Couldn't load channel "+index+": "+e.getMessage();}
+    }
+
+    private String changeChannelByName(String requestedName){
+        String name=requestedName.toLowerCase(Locale.ROOT).trim();
+        try(ChannelDatabase db=new ChannelDatabase(this)){
+            List<Channel> bank=db.getAllChannels();
+            Channel exact=null;
+            for(Channel c:bank){
+                if(c.name!=null&&c.name.trim().equalsIgnoreCase(name)){
+                    if(exact!=null)return "Multiple saved channels are named "+requestedName+". Please use a channel number; no change made.";
+                    exact=c;
                 }
             }
-            if(match==null)return String.format(Locale.US,"%.4f MHz is not in your saved channel bank. Configure a channel first; no radio change was made.",frequency);
-            String blocked=com.rumitx.app.repeaters.RepeaterProfiles.blockedChannel(match);
-            if(blocked!=null)return "Channel programming blocked: "+blocked+". No change made.";
-            if(!radio.programChannel(match))return "The radio did not acknowledge the channel change. No success is confirmed.";
-            getSharedPreferences("radio_session",0).edit().putLong("active_channel",match.id).apply();
-            return String.format(Locale.US,"Radio tuned to saved channel %s, RX %.4f MHz. No transmission started.",match.name,match.rxFreqMHz);
-        }catch(Exception e){return "Could not tune the radio: "+e.getMessage();}
+            if(exact!=null)return programSavedChannel(exact,exact.name);
+            Channel partial=null;
+            int count=0;
+            StringBuilder choices=new StringBuilder();
+            for(Channel c:bank){
+                if(c.name!=null&&c.name.toLowerCase(Locale.ROOT).contains(name)){
+                    count++;
+                    if(choices.length()<120){
+                        if(choices.length()>0)choices.append(", ");
+                        choices.append(c.name);
+                    }
+                    partial=c;
+                }
+            }
+            if(count==1)return programSavedChannel(partial,partial.name);
+            if(count>1)return "I found multiple matching saved channels: "+choices+". Please be more specific; no change made.";
+            return "I don't see a saved channel named '"+requestedName+"'. Add it to the channel bank first; no change was made.";
+        }catch(Exception e){return "Couldn't search saved channels: "+e.getMessage();}
+    }
+
+    /** For unsaved frequencies, program a TEMPORARY analog FM simplex profile.
+     * No database write; channel bank remains unchanged. No automatic PTT.
+     * TX is configured to the same frequency, so users must authorize any later transmission.
+     */
+    private String changeFrequency(double frequency){
+        if(!Double.isFinite(frequency)||frequency<400.0||frequency>470.0)
+            return "The S80's radio path accepts 400–470 MHz. No change was made.";
+        RadioController radio=RadioController.getInstance();
+        if(VoiceTxBridge.isTransmitting()||radio.isKeyed())
+            return "Radio is transmitting. Release PTT before tuning; no change was made.";
+        if(!radio.isConnected())
+            return "The S80 radio module isn't connected. No change was made.";
+        try(ChannelDatabase db=new ChannelDatabase(this)){
+            Channel match=null;
+            for(Channel c:db.getAllChannels()){
+                if(Math.abs(c.rxFreqMHz-frequency)<=0.000005){
+                    if(match!=null)
+                        return String.format(Locale.US,"Several saved channels use %.4f MHz. Choose a channel by name or number; no change made.",frequency);
+                    match=c;
+                }
+            }
+            if(match!=null)return programSavedChannel(match,match.name);
+            // The user has explicitly asked to tune a specific frequency, not alter a saved channel.
+            // Use a neutral, temporary FM profile with tones OFF; don't infer a DMR talkgroup or PL code.
+            Channel temporary=new Channel();
+            temporary.id=0;
+            temporary.name=String.format(Locale.US,"V3 temporary %.4f",frequency);
+            temporary.isDigital=false;
+            temporary.rxFreqMHz=frequency;
+            temporary.txFreqMHz=frequency;
+            temporary.txCtcssHz=0;
+            temporary.rxCtcssHz=0;
+            temporary.txDcsCode=null;
+            temporary.rxDcsCode=null;
+            temporary.squelchLevel=1;
+            if(!radio.programChannel(temporary))
+                return String.format(Locale.US,"The radio did not acknowledge %.4f MHz. No success is confirmed.",frequency);
+            return String.format(Locale.US,"Copy! Radio acknowledged %.4f MHz. Temporary analog FM simplex, no PL tone. RX and TX are both set to %.4f MHz; no transmission was started. Only transmit if authorized.",frequency,frequency);
+        }catch(Exception e){
+            return "Couldn't tune to "+String.format(Locale.US,"%.4f",frequency)+" MHz: "+e.getMessage();
+        }
     }
 
     /** Normalize simple text-only JSON learned by the fine-tuned model. */
