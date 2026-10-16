@@ -5,6 +5,7 @@
 #include <ggml-backend.h>
 #include <algorithm>
 #include <mutex>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -18,6 +19,7 @@ struct Engine {
     llama_context *ctx = nullptr;
     const llama_vocab *vocab = nullptr;
     std::mutex mu;
+    std::atomic<bool> cancelRequested{false};
     ~Engine() {if(ctx) llama_free(ctx);if(model) llama_model_free(model);}
 };
 void javaError(JNIEnv *env,const char *type,const std::string &text){
@@ -51,6 +53,11 @@ Java_com_rumitx_app_LlamaBridge_nativeInitModel(JNIEnv *env,jclass,jstring path)
         cp.n_ctx=1024;cp.n_batch=256;cp.n_ubatch=128;
         // Reserve CPU for Android UI/audio. Four inference threads can starve the S80 display.
         cp.n_threads=2;cp.n_threads_batch=2;
+        // Interrupt CPU graph evaluation promptly even during prompt prefill.
+        cp.abort_callback=[](void *data)->bool{
+            return reinterpret_cast<Engine*>(data)->cancelRequested.load(std::memory_order_relaxed);
+        };
+        cp.abort_callback_data=e.get();
         e->ctx=llama_init_from_model(e->model,cp);
         if(!e->ctx)throw std::runtime_error("Cannot allocate inference context");
         return (jlong)reinterpret_cast<intptr_t>(e.release());
@@ -66,6 +73,7 @@ Java_com_rumitx_app_LlamaBridge_nativeGenerateStream(JNIEnv *env,jclass,jlong ha
     if(!e){javaError(env,"java/lang/IllegalStateException","Model not loaded");return nullptr;}
     // The caller runs on a background executor; never call this method on Android's main thread.
     std::lock_guard<std::mutex> guard(e->mu);
+    e->cancelRequested.store(false,std::memory_order_relaxed);
     try{
         jmethodID partialMethod=nullptr;
         if(listener){
@@ -87,9 +95,14 @@ Java_com_rumitx_app_LlamaBridge_nativeGenerateStream(JNIEnv *env,jclass,jlong ha
         if(got<=0)throw std::runtime_error("Tokenization failed");
         int pos=0;
         while(pos<got){
+            if(e->cancelRequested.load(std::memory_order_relaxed))
+                throw std::runtime_error("Generation cancelled by timeout");
             int count=std::min(256,got-pos);
             llama_batch batch=llama_batch_get_one(tokens.data()+pos,count);
-            if(llama_decode(e->ctx,batch)!=0)throw std::runtime_error("Prompt decode failed; memory pressure");
+            if(llama_decode(e->ctx,batch)!=0){
+                if(e->cancelRequested.load(std::memory_order_relaxed))throw std::runtime_error("Generation cancelled by timeout");
+                throw std::runtime_error("Prompt decode failed; memory pressure");
+            }
             pos+=count;
         }
         llama_sampler_chain_params params=llama_sampler_chain_default_params();
@@ -102,6 +115,7 @@ Java_com_rumitx_app_LlamaBridge_nativeGenerateStream(JNIEnv *env,jclass,jlong ha
         llama_sampler_chain_add(sampler,llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
         std::string output;
         for(int n=0;n<maxOutput && pos<1023;n++){
+            if(e->cancelRequested.load(std::memory_order_relaxed))break;
             llama_token next=llama_sampler_sample(sampler,e->ctx,-1);
             llama_sampler_accept(sampler,next);
             if(llama_vocab_is_eog(e->vocab,next))break;
@@ -114,7 +128,8 @@ Java_com_rumitx_app_LlamaBridge_nativeGenerateStream(JNIEnv *env,jclass,jlong ha
             }else if(count>0)output.append(local,(size_t)count);
             // Send the full UTF-8 byte prefix, not a potentially split Unicode token,
             // at a modest cadence; Java coalesces these onto the Android UI thread.
-            if(partialMethod && ((n%5)==4 || n==0)){
+            // Notify Java every produced token (UI redraws are throttled there).
+            if(partialMethod){
                 jbyteArray bytes=env->NewByteArray((jsize)output.size());
                 if(bytes){
                     env->SetByteArrayRegion(bytes,0,(jsize)output.size(),
@@ -126,10 +141,15 @@ Java_com_rumitx_app_LlamaBridge_nativeGenerateStream(JNIEnv *env,jclass,jlong ha
             }
             if(output.find("<|im_end|>")!=std::string::npos)break;
             llama_batch batch=llama_batch_get_one(&next,1);
-            if(llama_decode(e->ctx,batch)!=0){logErr("Output decoding stopped");break;}
+            if(llama_decode(e->ctx,batch)!=0){
+                if(!e->cancelRequested.load(std::memory_order_relaxed))logErr("Output decoding stopped");
+                break;
+            }
             pos++;
         }
         llama_sampler_free(sampler);
+        if(e->cancelRequested.load(std::memory_order_relaxed))
+            throw std::runtime_error("Generation cancelled by timeout");
         if(output.empty())output="I couldn't generate a response.";
         // Construct java.lang.String from UTF-8 bytes: llama tokens can contain
         // four-byte UTF-8 code points that NewStringUTF must NOT receive.
@@ -149,6 +169,13 @@ Java_com_rumitx_app_LlamaBridge_nativeGenerateStream(JNIEnv *env,jclass,jlong ha
         javaError(env,"java/lang/IllegalStateException","Native generation error");return nullptr;
     }
 }
+// No engine mutex here: cancellation must work while nativeGenerateStream holds it.
+extern "C" JNIEXPORT void JNICALL
+Java_com_rumitx_app_LlamaBridge_nativeCancelGeneration(JNIEnv *,jclass,jlong handle){
+    auto *e=reinterpret_cast<Engine*>(static_cast<intptr_t>(handle));
+    if(e)e->cancelRequested.store(true,std::memory_order_relaxed);
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_rumitx_app_LlamaBridge_nativeFreeModel(JNIEnv *,jclass,jlong handle){
     auto *e=reinterpret_cast<Engine*>(static_cast<intptr_t>(handle));delete e;
