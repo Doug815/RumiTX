@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          grep -F 'versionCode 20301049' app/build.gradle
+          grep -F 'versionCode 20301050' app/build.gradle
           grep -F 'versionName "2.3.2-llama-bundled"' app/build.gradle
           grep -F 'applicationId "com.rumitx.app"' app/build.gradle
           grep -F 'VoiceTxBridge.isTransmitting()' app/src/main/java/com/rumitx/app/PttDispatcher.java
@@ -73,7 +73,7 @@ jobs:
           a=(root/"LlamaChatActivity.java").read_text()
           bridge=(root/"LlamaBridge.java").read_text()
           native=Path("app/src/main/cpp/rumitx_llama_jni.cpp").read_text()
-          assert 'versionCode 20301049' in Path("app/build.gradle").read_text()
+          assert 'versionCode 20301050' in Path("app/build.gradle").read_text()
           assert 'Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)' in a
           assert 'nativeEngine.generateStreaming(' in a
           assert 'new String(bytes,StandardCharsets.UTF_8)' in a
@@ -90,6 +90,37 @@ jobs:
           assert 'DB_VERSION = 4' in (root/"ChannelDatabase.java").read_text()
           assert 'verifySha256(model,callback)' in (root/"LlamaModelManager.java").read_text()
           print("PASS: UI, streaming, voice, bounded CPU, chat, DB and model loader invariants")
+          PY
+      - name: Test local repeater Q&A and inference timeout invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          javac -d .ci-tests app/src/main/java/com/rumitx/app/RadioIntentParser.java app/src/main/java/com/rumitx/app/RepeaterQuestion.java tools/tests/RepeaterQuestionTest.java
+          java -cp .ci-tests com.rumitx.app.RepeaterQuestionTest
+          python3 - <<'PY'
+          from pathlib import Path
+          app=Path("app/src/main/java/com/rumitx/app")
+          a=(app/"LlamaChatActivity.java").read_text()
+          bridge=(app/"LlamaBridge.java").read_text()
+          cpp=Path("app/src/main/cpp/rumitx_llama_jni.cpp").read_text()
+          search=(app/"RepeaterLocalSearch.java").read_text()
+          assert 'versionCode 20301050' in Path("app/build.gradle").read_text()
+          assert 'private static final long INFERENCE_TIMEOUT_MS=30000L;' in a
+          assert 'current.cancelGeneration()' in a
+          assert 'nativeCancelGeneration(long handle)' in bridge
+          assert 'cp.abort_callback=' in cpp
+          assert 'nativeCancelGeneration(' in cpp
+          assert 'RepeaterLocalSearch.search(getApplicationContext(),request)' in a
+          assert a.index('RadioIntentParser.parse(question)')<a.index('RepeaterQuestion.parse(question)')
+          assert 'SQLiteDatabase.OPEN_READONLY' in search
+          assert 'LIMIT=10' in search
+          assert 'getDatabasePath("repeaters.db")' in search
+          assert 'getDatabasePath("rumitx.db")' in search
+          assert 'SQLiteDatabase.openDatabase(' in search
+          assert 'getWritableDatabase()' not in search and 'execSQL(' not in search
+          assert 'DB_VERSION = 4' in (app/"ChannelDatabase.java").read_text()
+          assert 'verifySha256(model,callback)' in (app/"LlamaModelManager.java").read_text()
+          print("PASS: read-only RAG search, native timeout/cancel, channel command priority, DB v4 and GGUF loader")
           PY
       - name: Regression test persisted V4 database and older schema migrations
         run: python3 tools/tests/test_channel_database_migration.py
@@ -108,14 +139,14 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk dist/RumiTX-v2.3.2-llama-bundled-CI-DEBUG.apk
           cp tools/sign_llama_bundled.sh dist/sign_llama_bundled.sh
           "$ANDROID_HOME/build-tools/33.0.2/aapt" dump badging dist/RumiTX-v2.3.2-llama-bundled-UNSIGNED.apk > dist/BADGING.txt
-          grep -F "package: name='com.rumitx.app' versionCode='20301049' versionName='2.3.2-llama-bundled'" dist/BADGING.txt
+          grep -F "package: name='com.rumitx.app' versionCode='20301050' versionName='2.3.2-llama-bundled'" dist/BADGING.txt
           for lib in libllama.so libggml.so libggml-base.so libggml-cpu.so librumitx_llama_jni.so; do
             unzip -l dist/RumiTX-v2.3.2-llama-bundled-UNSIGNED.apk "lib/arm64-v8a/$lib" | tee -a dist/LIBRARY_SIZES.txt
           done
           cp app/src/main/jniLibs/arm64-v8a/*.so dist/
           (cd dist && sha256sum *.apk *.so > SHA256SUMS.txt)
           cat > dist/README.txt <<'EOF'
-          RumiTX 2030 — v2.3.2-llama-bundled / versionCode 20301049
+          RumiTX 2030 — v2.3.2-llama-bundled / versionCode 20301050
           Base: v2.3.1-source, including Voice TX PTT/channel programming guards.
           Pinned llama.cpp: b11206. Android ARM64 API 26 native .so libraries.
           AI runs via app-process JNI, no root, shell installer, ADB or standalone executable.
