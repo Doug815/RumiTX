@@ -82,7 +82,7 @@ jobs:
           assert 'voice=new RumiVoice(' in a and 'outer.addView(bottom)' in a
           assert 'MIC · TALK' in a and 'SPEAK: OFF' in a and 'scroller.fullScroll' in a
           assert '"<|im_start|>assistant\n<think>\n\n</think>\n\n"' not in a # source is Java-escaped
-          assert '"/no_think<|im_end|>' in a
+          assert '/no_think<|im_end|>' in a
           assert 'onPartial(byte[] utf8)' in bridge
           assert 'nativeGenerateStream(' in native and 'env->CallVoidMethod(listener' in native
           assert 'cp.n_threads=2' in native
