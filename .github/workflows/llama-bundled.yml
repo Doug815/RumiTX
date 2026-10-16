@@ -45,9 +45,7 @@ jobs:
       - name: Generate compileOnly Android 8.1 HIDL signatures
         run: bash tools/build_hidl_compile_stubs.sh
       - name: Cross-compile llama.cpp and JNI for Android arm64-v8a
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
-        run: bash tools/build_llama_android.sh
+        run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018" bash tools/build_llama_android.sh
       - name: Build Android 8.1 release and CI debug APK
         run: gradle --no-daemon --stacktrace :app:assembleRelease :app:assembleDebug -x lintVitalRelease
       - name: Validate contents, package metadata and checksums
