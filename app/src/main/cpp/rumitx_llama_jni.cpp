@@ -43,7 +43,7 @@ Java_com_rumitx_app_LlamaBridge_nativeInitModel(JNIEnv *env,jclass,jstring path)
         std::call_once(initialized,[]{ggml_backend_load_all();});
         std::unique_ptr<Engine> e(new Engine());
         llama_model_params mp=llama_model_default_params();
-        mp.n_gpu_layers=0;mp.use_mmap=true;
+        mp.n_gpu_layers=0;
         e->model=llama_model_load_from_file(p.c_str(),mp);
         if(!e->model)throw std::runtime_error("GGUF load failed or insufficient RAM");
         e->vocab=llama_model_get_vocab(e->model);
