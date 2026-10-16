@@ -1,11 +1,16 @@
 package com.rumitx.app;
 
 import android.app.Activity;
-import android.os.Bundle;
 import android.content.Intent;
-import android.net.Uri;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.net.Uri;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.Process;
+import android.os.SystemClock;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -13,125 +18,260 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
-import android.text.TextUtils;
+import android.widget.PopupMenu;
+import org.json.JSONObject;
 import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Real local AI, not a proxy or external rooted binary.
- * First launch automatically downloads and validates the 1.1GB GGUF.
- * The radio's existing PTT and HIDL service are deliberately untouched.
+ * Android 8.1, non-root AI with production-style bottom controls.
+ * Model verification, model load, SQLite and all inference run exclusively
+ * on a BACKGROUND worker. UI updates are coalesced at <= ~7Hz.
+ * This chat does not connect to any cloud inference service.
  */
 public final class LlamaChatActivity extends Activity {
-    private static final ExecutorService WORK=Executors.newSingleThreadExecutor(r->new Thread(r,"RumiTX-JNI-AI"));
+    private static final int PICK_GGUF=4108;
+    private static final ExecutorService WORK=Executors.newSingleThreadExecutor(r->{
+        Thread t=new Thread(()->{
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
+            r.run();
+        },"RumiTX-JNI-AI");
+        t.setDaemon(true);
+        return t;
+    });
     private static final Object ENGINE_LOCK=new Object();
     private static LlamaBridge engine;
+
+    private final Handler main=new Handler(Looper.getMainLooper());
     private ScrollView scroller;
-    private TextView transcript,status,progress;
+    private TextView transcript,status,progress,voiceStatus,thinkingLabel;
     private EditText input;
-    private static final int PICK_GGUF=4108;
-    private Button send,retry,loadFromPhone;
+    private Button send,retry,loadFromPhone,micButton,speakButton;
+    private RumiThinkingView thinking;
+    private RumiVoice voice;
     private volatile boolean busy;
     private String conversation="";
-    private final String SYSTEM=
-        "You are RumiTX 2030, a helpful, conversational local radio and survival assistant "+
-        "on a DOOGEE S80 Android 8.1 phone. Answer the user directly in plain English "+
-        "and admit uncertainty. Do not output JSON unless asked. You do not directly "+
-        "control PTT or transmit. Never claim you tuned a real radio from this chat. "+
-        "Provide practical radio knowledge, clarify frequencies, and be concise. /no_think";
-    private int dp(float value){return Math.round(getResources().getDisplayMetrics().density*value);}
-    private TextView text(String s,int sz,int color){
-        TextView view=new TextView(this);view.setText(s);view.setTextSize(sz);view.setTextColor(color);
-        view.setPadding(dp(7),dp(5),dp(7),dp(5));return view;
+    private long startedAt;
+    private volatile long lastNativePreview;
+    private volatile String latestPreview="";
+    private volatile boolean previewPending;
+    private final Runnable thinkTick=new Runnable(){
+        @Override public void run(){
+            if(!busy || isFinishing())return;
+            thinkingLabel.setText("RUMI IS THINKING  ·  "+
+                Math.max(0,(SystemClock.uptimeMillis()-startedAt)/1000)+"s");
+            main.postDelayed(this,1000);
+        }
+    };
+    private static final String SYSTEM=
+        "You are RumiTX, a helpful, friendly conversational assistant on an S80 radio. "+
+        "Speak naturally in English. Chat casually, explain practical topics clearly, "+
+        "and admit uncertainty. Do not emit JSON, tool calls or schemas. "+
+        "You may describe radio procedures, but NEVER claim hardware changed unless "+
+        "the radio command handler confirmed it. Keep answers brief. /no_think";
+
+    private int dp(int value){
+        return Math.round(getResources().getDisplayMetrics().density*value);
     }
-    private Button button(String label){
-        Button b=new Button(this);b.setAllCaps(false);b.setText(label);
-        b.setTextColor(Color.rgb(0,228,255));b.setTextSize(13);return b;
+    private TextView text(String value,int size,int color){
+        TextView view=new TextView(this);
+        view.setText(value);view.setTextSize(size);view.setTextColor(color);
+        view.setPadding(dp(7),dp(5),dp(7),dp(5));
+        return view;
     }
-    private void uiStatus(String s){
-        runOnUiThread(()->{if(!isFinishing())status.setText(s);});
+    private Button button(String value){
+        Button b=new Button(this);
+        b.setAllCaps(false);b.setText(value);b.setTextSize(12);
+        b.setTextColor(Color.rgb(0,228,255));
+        b.setMinWidth(0);b.setPadding(0,0,0,0);
+        return b;
+    }
+    private void statusUi(String msg){
+        main.post(()->{if(!isFinishing())status.setText(msg);});
+    }
+    private void scrollLatest(){
+        scroller.post(()->{
+            if(!isFinishing())scroller.fullScroll(View.FOCUS_DOWN);
+        });
     }
     private void append(String entry){
-        runOnUiThread(()->{
+        main.post(()->{
             if(isFinishing())return;
             conversation+=entry+"\n\n";
             if(conversation.length()>50000)conversation=conversation.substring(conversation.length()-50000);
             transcript.setText(conversation);
             getPreferences(0).edit().putString("conversation",conversation).apply();
-            scroller.post(()->scroller.fullScroll(View.FOCUS_DOWN));
+            scrollLatest();
         });
     }
     private void setBusy(boolean on){
         busy=on;
-        runOnUiThread(()->{if(!isFinishing()){send.setEnabled(!on);retry.setEnabled(!on);loadFromPhone.setEnabled(!on);}});
+        main.post(()->{
+            if(isFinishing())return;
+            send.setEnabled(!on);retry.setEnabled(!on);
+            loadFromPhone.setEnabled(!on);micButton.setEnabled(!on);
+            if(on){
+                startedAt=SystemClock.uptimeMillis();
+                thinking.setActive(true);
+                thinkingLabel.setVisibility(View.VISIBLE);
+                main.removeCallbacks(thinkTick);
+                main.post(thinkTick);
+            }else{
+                main.removeCallbacks(thinkTick);
+                thinking.setActive(false);
+                thinkingLabel.setVisibility(View.GONE);
+            }
+        });
     }
+
     @Override public void onCreate(Bundle state){
         super.onCreate(state);
-        getWindow().setStatusBarColor(0xff070e1a);
+        getWindow().setStatusBarColor(0xff070d17);
         getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        LinearLayout page=new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);page.setPadding(dp(9),dp(8),dp(9),dp(6));
-        page.setBackgroundColor(0xff080d16);setContentView(page);
-        TextView title=text("RUMITX 2030  /  NATIVE OFFLINE AI",18,0xff00e5ff);
-        title.setTypeface(Typeface.MONOSPACE,Typeface.BOLD);page.addView(title);
-        status=text("Initializing local AI…",12,0xffe7b15b);
-        page.addView(status);
-        progress=text("Model: Qwen3-1.7B Q4_K_M · Internal Storage",11,0xff91b6c5);
-        page.addView(progress);
+        LinearLayout outer=new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
+        outer.setPadding(dp(9),dp(7),dp(9),dp(7));
+        outer.setBackgroundColor(0xff070d17);
+        setContentView(outer);
+
+        LinearLayout titleRow=new LinearLayout(this);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title=text("RUMITX / 2030",18,0xff00e6ff);
+        title.setTypeface(Typeface.MONOSPACE,Typeface.BOLD);
+        titleRow.addView(title,new LinearLayout.LayoutParams(0,dp(45),1));
+        Button options=button("⋮");
+        options.setTextSize(22);
+        titleRow.addView(options,new LinearLayout.LayoutParams(dp(45),dp(45)));
+        outer.addView(titleRow);
+        options.setOnClickListener(v->{
+            PopupMenu menu=new PopupMenu(this,options);
+            menu.getMenu().add("Retry model").setOnMenuItemClickListener(it->{initialize();return true;});
+            menu.getMenu().add("Load model from phone").setOnMenuItemClickListener(it->{chooseModel();return true;});
+            menu.show();
+        });
+        status=text("Initializing offline AI…",12,0xffffc76b);
+        outer.addView(status);
+        progress=text("Qwen3-1.7B Q4_K_M · verified private GGUF",11,0xff91b6c5);
+        outer.addView(progress);
+        // Keep both model recovery actions from the previous non-root build.
         LinearLayout modelControls=new LinearLayout(this);
         modelControls.setOrientation(LinearLayout.HORIZONTAL);
         retry=button("Retry / Download");
         loadFromPhone=button("Load from phone");
-        modelControls.addView(retry,new LinearLayout.LayoutParams(0,dp(48),1));
-        modelControls.addView(loadFromPhone,new LinearLayout.LayoutParams(0,dp(48),1));
-        page.addView(modelControls,new LinearLayout.LayoutParams(-1,dp(48)));
+        modelControls.addView(retry,new LinearLayout.LayoutParams(0,dp(39),1));
+        modelControls.addView(loadFromPhone,new LinearLayout.LayoutParams(0,dp(39),1));
+        outer.addView(modelControls);
         retry.setOnClickListener(v->initialize());
-        loadFromPhone.setOnClickListener(v->{
-            if(busy)return;
-            Intent picker=new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            picker.addCategory(Intent.CATEGORY_OPENABLE);
-            picker.setType("*/*"); // Android provider MIME for .gguf varies.
-            picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivityForResult(picker,PICK_GGUF);
-        });
-        scroller=new ScrollView(this);scroller.setFillViewport(true);
+        loadFromPhone.setOnClickListener(v->chooseModel());
+
+        scroller=new ScrollView(this);
+        scroller.setFillViewport(true);
         transcript=text("",15,0xffe4f5fc);
         transcript.setTextIsSelectable(true);
         scroller.addView(transcript);
-        page.addView(scroller,new LinearLayout.LayoutParams(-1,0,1));
-        LinearLayout row=new LinearLayout(this);row.setOrientation(LinearLayout.HORIZONTAL);
-        input=new EditText(this);input.setTextColor(Color.WHITE);input.setHintTextColor(0xff7896a6);
-        input.setHint("Ask RumiTX…");input.setTextSize(15);input.setMinLines(1);
-        input.setMaxLines(3);
-        row.addView(input,new LinearLayout.LayoutParams(0,-2,1));
-        send=button("Send");row.addView(send,new LinearLayout.LayoutParams(dp(77),dp(55)));
-        page.addView(row);send.setOnClickListener(v->ask());
+        outer.addView(scroller,new LinearLayout.LayoutParams(-1,0,1));
+        transcript.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,oright,ob)->{
+            if(b!=ob)scrollLatest();
+        });
+
+        thinking=new RumiThinkingView(this);
+        outer.addView(thinking,new LinearLayout.LayoutParams(-1,dp(47)));
+        thinkingLabel=text("RUMI IS THINKING",11,0xff00e6ff);
+        thinkingLabel.setGravity(Gravity.CENTER);
+        thinkingLabel.setVisibility(View.GONE);
+        outer.addView(thinkingLabel);
+
+        // Restore the production control layout at the BOTTOM, not top right.
+        LinearLayout compose=new LinearLayout(this);
+        compose.setOrientation(LinearLayout.HORIZONTAL);
+        input=new EditText(this);
+        input.setTextColor(Color.WHITE);
+        input.setHintTextColor(0xff7896a6);
+        input.setHint("Ask RumiTX…");
+        input.setTextSize(15);
+        input.setMinLines(1);input.setMaxLines(3);
+        compose.addView(input,new LinearLayout.LayoutParams(0,-2,1));
+        send=button("Send");
+        compose.addView(send,new LinearLayout.LayoutParams(dp(72),dp(54)));
+        outer.addView(compose);
+        send.setOnClickListener(v->ask());
+
+        LinearLayout bottom=new LinearLayout(this);
+        bottom.setOrientation(LinearLayout.HORIZONTAL);
+        micButton=button("MIC · TALK");
+        speakButton=button("SPEAK: OFF");
+        bottom.addView(micButton,new LinearLayout.LayoutParams(0,dp(44),1));
+        bottom.addView(speakButton,new LinearLayout.LayoutParams(0,dp(44),1));
+        outer.addView(bottom);
+
+        voiceStatus=text("Tap MIC to talk. Android recognizer may need internet; AI runs locally.",11,0xff9baec2);
+        outer.addView(voiceStatus);
+        voice=new RumiVoice(this,new RumiVoice.Callback(){
+            @Override public void onSpeech(String words){
+                main.post(()->{
+                    if(isFinishing())return;
+                    input.setText(words);
+                    if(!busy)ask();
+                    else voiceStatus.setText("Voice received; send after current answer.");
+                });
+            }
+            @Override public void onStatus(String msg){
+                main.post(()->{if(!isFinishing())voiceStatus.setText(msg);});
+            }
+        });
+        micButton.setOnClickListener(v->{
+            if(busy)return;
+            if(VoiceTxBridge.isTransmitting()||RadioController.getInstance().isKeyed()){
+                voiceStatus.setText("Release radio PTT before speaking to RumiTX.");
+                return;
+            }
+            voice.setSpeakingEnabled(true);
+            speakButton.setText("SPEAK: ON");
+            voice.listen();
+        });
+        speakButton.setOnClickListener(v->{
+            boolean enabled=!voice.isSpeakingEnabled();
+            voice.setSpeakingEnabled(enabled);
+            speakButton.setText(enabled?"SPEAK: ON":"SPEAK: OFF");
+        });
         conversation=getPreferences(0).getString("conversation",
-            "RumiTX 2030 · Native llama.cpp on ARM64\n\n"+
-            "Offline after first model download. No root, no ADB and no external inference service.\n\n");
+            "RumiTX 2030 · Offline AI\n\nAsk me anything, or use a radio command.\n\n");
         transcript.setText(conversation);
+        scrollLatest();
         initialize();
     }
+
+    private void chooseModel(){
+        if(busy)return;
+        Intent picker=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        picker.addCategory(Intent.CATEGORY_OPENABLE);
+        picker.setType("*/*");
+        picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        startActivityForResult(picker,PICK_GGUF);
+    }
     private void modelProgress(long bytes,long total,String phase){
-        runOnUiThread(()->{
+        main.post(()->{
             if(isFinishing())return;
-            long pct=total>0?(bytes*100)/total:0;
             status.setText(phase);
-            progress.setText(String.format(java.util.Locale.US,
-              "Model: %d%%  ·  %d / %d MiB",pct,bytes/1048576,total/1048576));
+            progress.setText(String.format(Locale.US,
+                "Model: %d%%  ·  %d / %d MiB",total>0?(bytes*100)/total:0,
+                bytes/1048576,total/1048576));
         });
     }
     private void loadNative(File model){
-        uiStatus("Loading verified GGUF into device memory…");
+        statusUi("Loading GGUF into S80 memory…");
         synchronized(ENGINE_LOCK){
             if(engine==null){
-                LlamaBridge bridge=new LlamaBridge();
-                bridge.initModel(model.getAbsolutePath());
-                engine=bridge;
+                LlamaBridge b=new LlamaBridge();
+                b.initModel(model.getAbsolutePath());
+                engine=b;
             }
         }
-        uiStatus("READY · Local ARM64 inference; no root needed");
+        statusUi("READY · Local AI · Voice controls active");
     }
     private void initialize(){
         if(busy)return;
@@ -139,66 +279,192 @@ public final class LlamaChatActivity extends Activity {
         WORK.execute(()->{
             try{
                 synchronized(ENGINE_LOCK){
-                    if(engine!=null){
-                        uiStatus("READY · Native model already loaded");
-                        return;
-                    }
+                    if(engine!=null){statusUi("READY · Native GGUF already loaded");return;}
                 }
                 File model=LlamaModelManager.ensureDownloaded(getApplicationContext(),this::modelProgress);
                 loadNative(model);
             }catch(Throwable t){
-                uiStatus("Model setup failed: "+t.getMessage()+" — retry or load from phone");
-                android.util.Log.e("RumiTX-JNI","Model setup failed",t);
+                statusUi("Model setup failed: "+t.getMessage()+" · Retry or load from phone");
+                android.util.Log.e("RumiTX-JNI","Model setup",t);
             }finally{setBusy(false);}
         });
     }
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){
         super.onActivityResult(requestCode,resultCode,data);
-        if(requestCode!=PICK_GGUF||resultCode!=RESULT_OK||data==null||data.getData()==null)return;
-        if(busy)return;
-        final Uri uri=data.getData();
+        if(requestCode!=PICK_GGUF||resultCode!=RESULT_OK||data==null||data.getData()==null||busy)return;
+        Uri uri=data.getData();
         setBusy(true);
         WORK.execute(()->{
             try{
                 File model=LlamaModelManager.importFromUri(getApplicationContext(),uri,this::modelProgress);
                 loadNative(model);
             }catch(Throwable t){
-                uiStatus("Selected model rejected: "+t.getMessage());
-                android.util.Log.e("RumiTX-JNI","Manual model import failed",t);
+                statusUi("Selected GGUF rejected: "+t.getMessage());
+                android.util.Log.e("RumiTX-JNI","Manual import",t);
             }finally{setBusy(false);}
+        });
+    }
+    /** Replies to simple greetings locally to avoid spending minutes on trivial intents. */
+    static String quickGreeting(String question){
+        String q=question.toLowerCase(Locale.US).trim().replaceAll("[.!? ]+$","");
+        if(q.matches("(?:hi|hello|hey|hi there|hello there|hey there|good morning|good afternoon|good evening)"))
+            return "Hey there! I'm RumiTX. What would you like to talk about?";
+        if(q.matches("(?:how are you|how's it going|hows it going|how are you doing)"))
+            return "I'm here and ready! How's your day going?";
+        return null;
+    }
+    /** Never expose radio fine-tuning JSON error schemas to normal chat users. */
+    static String cleanAnswer(String raw){
+        if(raw==null)return "I couldn't generate a reply. Please try again.";
+        String s=raw.replaceAll("(?s)<think>.*?</think>","")
+           .replaceAll("(?s)<think>.*","")
+           .replace("<|im_end|>","").replace("<|im_start|>","").trim();
+        if(s.startsWith("{")&&s.endsWith("}")){
+            try{
+                JSONObject json=new JSONObject(s);
+                for(String key:new String[]{"text","answer","reply","response","content"}){
+                    String answer=json.optString(key,"").trim();
+                    if(!answer.isEmpty()&&!answer.startsWith("{"))return answer;
+                }
+                return "I'm ready to chat. Could you ask that another way?";
+            }catch(Exception ignored){
+                return "I had trouble interpreting that answer. Could you try again?";
+            }
+        }
+        return s.isEmpty()?"I couldn't generate a reply. Please try again.":s;
+    }
+    /** Feed only safe, validated radio intents to the radio; never generated JSON. */
+    private String runRadioIntent(RadioIntentParser.Intent intent){
+        switch(intent.type){
+            case UNSUPPORTED:return intent.error!=null?intent.error:"Unsupported command; nothing changed.";
+            case CHANNEL_NUMBER: {
+                if(intent.channelNumber<1||intent.channelNumber>999)return "Channel number out of range.";
+                try(ChannelDatabase db=new ChannelDatabase(this)){
+                    List<Channel> channels=db.getAllChannels();
+                    if(intent.channelNumber>channels.size())
+                        return "Channel "+intent.channelNumber+" isn't saved; no radio change made.";
+                    return programSavedChannel(channels.get(intent.channelNumber-1));
+                }
+            }
+            case CHANNEL_NAME: {
+                try(ChannelDatabase db=new ChannelDatabase(this)){
+                    Channel match=null;
+                    for(Channel c:db.getAllChannels())if(c.name!=null &&
+                            c.name.equalsIgnoreCase(intent.channelName)){
+                        if(match!=null)return "Multiple channels match. Use a channel number.";
+                        match=c;
+                    }
+                    return match==null?"No channel named '"+intent.channelName+"' is saved.":programSavedChannel(match);
+                }
+            }
+            case FREQUENCY: {
+                Channel temp=new Channel();
+                temp.id=0;
+                temp.name=String.format(Locale.US,"Temporary %.4f",intent.frequencyMHz);
+                temp.rxFreqMHz=intent.frequencyMHz;temp.txFreqMHz=intent.txFrequencyMHz;
+                temp.isDigital=false;temp.rxCtcssHz=intent.plHz;
+                temp.txCtcssHz=0;temp.rxDcsCode=intent.dcsCode;
+                temp.squelchLevel=1;
+                return programSavedChannel(temp);
+            }
+            default:return null; // Normal conversation goes to model.
+        }
+    }
+    private String programSavedChannel(Channel channel){
+        RadioController radio=RadioController.getInstance();
+        if(VoiceTxBridge.isTransmitting()||radio.isKeyed())
+            return "Release PTT first. No change made.";
+        if(!radio.isConnected())return "Radio module disconnected. No change made.";
+        String blocked=com.rumitx.app.repeaters.RepeaterProfiles.blockedChannel(channel);
+        if(blocked!=null)return "Cannot program channel: "+blocked+". Nothing changed.";
+        try{
+            if(!radio.programChannel(channel))
+                return "The radio did not acknowledge programming. No change confirmed.";
+            getSharedPreferences("radio_session",0).edit()
+                .putLong("active_channel",channel.id>0?channel.id:-1).apply();
+            return String.format(Locale.US,
+                "Radio acknowledged: %s. RX %.4f MHz, TX %.4f MHz. No transmission started.",
+                channel.name,channel.rxFreqMHz,channel.txFreqMHz);
+        }catch(Exception e){
+            return "Radio programming failed; no success confirmed: "+e.getMessage();
+        }
+    }
+    private String prompt(String question,String prior){
+        // Last user /no_think applies even if the model was trained on action JSON.
+        if(prior.length()>850)prior=prior.substring(prior.length()-850);
+        return "<|im_start|>system\n"+SYSTEM+"<|im_end|>\n"+
+            "<|im_start|>user\n"+
+            (prior.isEmpty()?"":"Earlier conversation:\n"+prior+"\n")+
+            question+"\n/no_think<|im_end|>\n"+
+            // Qwen3 recommended non-thinking prefill when bypassing chat template.
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n";
+    }
+    private void preview(String raw){
+        long now=SystemClock.uptimeMillis();
+        latestPreview=cleanAnswer(raw);
+        if(now-lastNativePreview<140||previewPending)return;
+        lastNativePreview=now;
+        previewPending=true;
+        main.post(()->{
+            previewPending=false;
+            if(!busy||isFinishing())return;
+            transcript.setText(conversation+"RUMITX · "+latestPreview+" ▌");
+            scrollLatest();
         });
     }
     private void ask(){
         if(busy)return;
         String question=input.getText().toString().trim();
         if(question.isEmpty())return;
+        String prior=conversation;
         input.setText("");
         append("YOU · "+question);
         setBusy(true);
-        uiStatus("Rumi is thinking on your S80…");
+        statusUi("Rumi is processing on your S80…");
         WORK.execute(()->{
+            String reply;
             try{
-                LlamaBridge current;
-                synchronized(ENGINE_LOCK){current=engine;}
-                if(current==null)throw new IllegalStateException("Local model is not yet loaded; tap Retry");
-                // Keep under small-context budget on the S80's older Cortex-A53.
-                String history=conversation;
-                if(history.length()>1200)history=history.substring(history.length()-1200);
-                String prompt="<|im_start|>system\n"+SYSTEM+"<|im_end|>\n"+
-                    "<|im_start|>user\n"+
-                    "Conversation context:\n"+history+"\nLatest question: "+question+
-                    "<|im_end|>\n<|im_start|>assistant\n";
-                String answer=current.generate(prompt,144);
-                // The small model may emit reasoning delimiters; only show its answer.
-                answer=answer.replaceAll("(?s)<think>.*?</think>","").trim();
-                if(answer.isEmpty())answer="I couldn't generate an answer. Please try rephrasing.";
-                append("RUMITX · "+answer);
-                uiStatus("READY · Local ARM64 inference");
+                RadioIntentParser.Intent intent=RadioIntentParser.parse(question);
+                if(intent.type!=RadioIntentParser.Type.CHAT){
+                    reply=runRadioIntent(intent);
+                }else{
+                    reply=quickGreeting(question);
+                    if(reply==null){
+                        LlamaBridge nativeEngine;
+                        synchronized(ENGINE_LOCK){nativeEngine=engine;}
+                        if(nativeEngine==null)throw new IllegalStateException("Model not loaded; Retry first");
+                        lastNativePreview=0;
+                        latestPreview="";
+                        previewPending=false;
+                        String raw=nativeEngine.generateStreaming(
+                            prompt(question,prior),80,bytes->
+                                preview(new String(bytes,StandardCharsets.UTF_8)));
+                        reply=cleanAnswer(raw);
+                    }
+                }
             }catch(Throwable t){
-                append("RUMITX · AI request failed: "+t.getMessage());
-                uiStatus("Inference error · retry your message");
-                android.util.Log.e("RumiTX-JNI","Inference failure",t);
-            }finally{setBusy(false);}
+                reply="I couldn't finish that request: "+t.getMessage();
+                android.util.Log.e("RumiTX-JNI","AI request failed",t);
+            }
+            final String result=reply;
+            // Append and speak on the MAIN looper; inference stays off it.
+            main.post(()->{
+                if(isFinishing())return;
+                conversation+="RUMITX · "+result+"\n\n";
+                if(conversation.length()>50000)conversation=conversation.substring(conversation.length()-50000);
+                transcript.setText(conversation);
+                getPreferences(0).edit().putString("conversation",conversation).apply();
+                status.setText("READY · ARM64 local AI");
+                scrollLatest();
+                if(voice!=null)voice.say(result);
+                setBusy(false);
+            });
         });
+    }
+    @Override protected void onDestroy(){
+        main.removeCallbacks(thinkTick);
+        if(voice!=null)voice.close();
+        super.onDestroy();
+        // Do not close the shared native model; it is reused between radio/AI screens.
     }
 }
