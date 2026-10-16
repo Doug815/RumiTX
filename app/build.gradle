@@ -9,8 +9,8 @@ android {
         applicationId "com.rumitx.app"
         minSdkVersion 26  // Android 8.0 (S80 runs 8.1)
         targetSdkVersion 27
-        versionCode 20301046
-        versionName "2.3.1-v3-repeater-catalog-import"
+        versionCode 20301047
+        versionName "2.3.1-v3-memory-chats-ui"
     }
 
     buildTypes {
