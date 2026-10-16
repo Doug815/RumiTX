@@ -22,6 +22,8 @@ def statements():
     # No hardcoded copy of the new schema is used for these fixtures.
     out = []
     for part in re.findall(r'db\.execSQL\(([\s\S]*?)\);', SOURCE):
+        # Remove Java // comments before extracting SQL literals (one contains "023").
+        part = re.sub(r'//[^\n]*', '', part)
         chunks = re.findall(r'"((?:\\.|[^"\\])*)"', part)
         if not chunks:
             continue
