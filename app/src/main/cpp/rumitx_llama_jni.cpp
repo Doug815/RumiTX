@@ -49,7 +49,8 @@ Java_com_rumitx_app_LlamaBridge_nativeInitModel(JNIEnv *env,jclass,jstring path)
         e->vocab=llama_model_get_vocab(e->model);
         llama_context_params cp=llama_context_default_params();
         cp.n_ctx=1024;cp.n_batch=256;cp.n_ubatch=128;
-        cp.n_threads=4;cp.n_threads_batch=4;
+        // Reserve CPU for Android UI/audio. Four inference threads can starve the S80 display.
+        cp.n_threads=2;cp.n_threads_batch=2;
         e->ctx=llama_init_from_model(e->model,cp);
         if(!e->ctx)throw std::runtime_error("Cannot allocate inference context");
         return (jlong)reinterpret_cast<intptr_t>(e.release());
@@ -60,15 +61,23 @@ Java_com_rumitx_app_LlamaBridge_nativeInitModel(JNIEnv *env,jclass,jstring path)
     }
 }
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_rumitx_app_LlamaBridge_nativeGenerate(JNIEnv *env,jclass,jlong handle,jstring prompt,jint maxTokens){
+Java_com_rumitx_app_LlamaBridge_nativeGenerateStream(JNIEnv *env,jclass,jlong handle,jstring prompt,jint maxTokens,jobject listener){
     auto *e=reinterpret_cast<Engine*>(static_cast<intptr_t>(handle));
     if(!e){javaError(env,"java/lang/IllegalStateException","Model not loaded");return nullptr;}
+    // The caller runs on a background executor; never call this method on Android's main thread.
     std::lock_guard<std::mutex> guard(e->mu);
     try{
+        jmethodID partialMethod=nullptr;
+        if(listener){
+            jclass cls=env->GetObjectClass(listener);
+            partialMethod=env->GetMethodID(cls,"onPartial","([B)V");
+            env->DeleteLocalRef(cls);
+            if(!partialMethod)return nullptr;
+        }
         std::string input=jstr(env,prompt);
         if(input.size()>12000)throw std::runtime_error("Prompt too long");
         llama_memory_clear(llama_get_memory(e->ctx),true);
-        int maxOutput=std::max(1,std::min(256,(int)maxTokens));
+        int maxOutput=std::max(1,std::min(128,(int)maxTokens));
         int need=llama_tokenize(e->vocab,input.data(),(int)input.size(),nullptr,0,true,true);
         if(need>=0)throw std::runtime_error("Unexpected tokenizer capacity result");
         need=-need;
@@ -103,12 +112,37 @@ Java_com_rumitx_app_LlamaBridge_nativeGenerate(JNIEnv *env,jclass,jlong handle,j
                 count=llama_token_to_piece(e->vocab,next,extra.data(),(int)extra.size(),0,false);
                 if(count>0)output.append(extra.data(),(size_t)count);
             }else if(count>0)output.append(local,(size_t)count);
+            // Send the full UTF-8 byte prefix, not a potentially split Unicode token,
+            // at a modest cadence; Java coalesces these onto the Android UI thread.
+            if(partialMethod && ((n%5)==4 || n==0)){
+                jbyteArray bytes=env->NewByteArray((jsize)output.size());
+                if(bytes){
+                    env->SetByteArrayRegion(bytes,0,(jsize)output.size(),
+                        reinterpret_cast<const jbyte*>(output.data()));
+                    env->CallVoidMethod(listener,partialMethod,bytes);
+                    env->DeleteLocalRef(bytes);
+                    if(env->ExceptionCheck()){llama_sampler_free(sampler);return nullptr;}
+                }
+            }
+            if(output.find("<|im_end|>")!=std::string::npos)break;
             llama_batch batch=llama_batch_get_one(&next,1);
             if(llama_decode(e->ctx,batch)!=0){logErr("Output decoding stopped");break;}
             pos++;
         }
         llama_sampler_free(sampler);
-        return env->NewStringUTF(output.empty()?"I couldn't generate a response.":output.c_str());
+        if(output.empty())output="I couldn't generate a response.";
+        // Construct java.lang.String from UTF-8 bytes: llama tokens can contain
+        // four-byte UTF-8 code points that NewStringUTF must NOT receive.
+        jbyteArray bytes=env->NewByteArray((jsize)output.size());
+        if(!bytes)return nullptr;
+        env->SetByteArrayRegion(bytes,0,(jsize)output.size(),
+            reinterpret_cast<const jbyte*>(output.data()));
+        jclass stringClass=env->FindClass("java/lang/String");
+        jmethodID ctor=env->GetMethodID(stringClass,"<init>","([BLjava/lang/String;)V");
+        jstring utf8=env->NewStringUTF("UTF-8");
+        jstring result=(jstring)env->NewObject(stringClass,ctor,bytes,utf8);
+        env->DeleteLocalRef(bytes);env->DeleteLocalRef(utf8);env->DeleteLocalRef(stringClass);
+        return result;
     }catch(const std::exception &ex){
         logErr(ex.what());javaError(env,"java/lang/IllegalStateException",ex.what());return nullptr;
     }catch(...){
