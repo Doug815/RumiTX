@@ -47,6 +47,9 @@ public final class RepeaterQuestion {
         city=city.replaceFirst("(?i)\\s+(?:repeaters?|frequenc(?:y|ies)|on\\s+the\\s+radio).*?$","")
                  .replaceFirst("(?i)\\s+(?:please|right\\s+now|currently|today|available|near\\s+me)$","")
                  .replaceAll("[\\s,?!.'’]+$","").trim();
+        // "frequency for K9RFD" is a callsign query, not city "K".
+        if(callsign!=null && (city.equalsIgnoreCase(callsign) ||
+            city.equalsIgnoreCase(callsign.substring(0,1))))city="";
         String state="";
         String[] suffixes={"Illinois:IL","Wisconsin:WI","Indiana:IN","IL:IL","WI:WI","IN:IN"};
         for(String suffix:suffixes){
