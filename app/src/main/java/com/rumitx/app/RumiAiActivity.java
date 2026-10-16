@@ -167,22 +167,136 @@ public final class RumiAiActivity extends Activity {
             voice.setSpeakingEnabled(enabled);
             voiceButton.setText(enabled?"SPEAK: ON":"SPEAK: OFF");
         });
-        resetButton.setOnClickListener(v->{
-            if(requestInFlight){voiceStatus.setText("Wait for the current answer before starting a new chat.");return;}
-            chatContext.clear();
-            io.execute(()->{try(ChannelDatabase db=new ChannelDatabase(this)){db.clearChat();}catch(Exception ignored){}});
-            transcript.setText("RumiTX 2030 · New conversation started.\n\n");
-            voice.stopSpeech();
-            voiceStatus.setText("Conversation cleared. Radio settings unchanged.");
-        });
+        resetButton.setOnClickListener(v->newChat());
         send.setOnClickListener(v->ask());
         io.execute(()->{
-            try(ChannelDatabase db=new ChannelDatabase(this)){db.loadRecentChat(chatContext);}
-            catch(Exception e){android.util.Log.w("RumiTX-Memory","Unable to restore chat history",e);}
+            try(ChannelDatabase db=new ChannelDatabase(this)){
+                long saved=getSharedPreferences("rumitx_chats",0).getLong("active",0);
+                long id=RumiChatStore.resolveThread(db.getWritableDatabase(),saved);
+                restoreThread(db,id);
+            }catch(Exception e){info("Cannot restore conversations: "+e.getMessage());android.util.Log.e("RumiTX-Chats","Restore",e);}
         });
         main.postDelayed(poll,400);
     }
-    private final Runnable poll=new Runnable(){public void run(){if(isFinishing())return;if(!busy){String state=RumiAiService.status();status.setText(ready()?"V3 runtime installed · "+state:"Setup needed · "+state);setupHelp.setVisibility(ready()?View.GONE:View.VISIBLE);send.setEnabled(ready()&&!requestInFlight);micButton.setEnabled(ready()&&!requestInFlight&&!busy);run.setEnabled(ready());}main.postDelayed(this,1800);}};
+    private final Runnable poll=new Runnable(){public void run(){if(isFinishing())return;if(!busy){String state=RumiAiService.status();status.setText(ready()?"V3 runtime installed · "+state:"Setup needed · "+state);setupHelp.setVisibility(ready()?View.GONE:View.VISIBLE);send.setEnabled(ready()&&!requestInFlight&&activeThreadId>0);micButton.setEnabled(ready()&&!requestInFlight&&!busy&&activeThreadId>0);run.setEnabled(ready());}main.postDelayed(this,1800);}};
+    /** Open a stored conversation and rehydrate both screen and model context. */
+    private void restoreThread(ChannelDatabase db,long id){
+        java.util.List<RumiChatStore.Turn> turns=RumiChatStore.turns(db.getReadableDatabase(),id,250);
+        RumiChatStore.loadContext(db.getReadableDatabase(),id,chatContext);
+        String title="New conversation";
+        for(RumiChatStore.Thread t:RumiChatStore.threads(db.getReadableDatabase()))if(t.id==id){title=t.title;break;}
+        StringBuilder screen=new StringBuilder();
+        for(RumiChatStore.Turn t:turns){
+            screen.append("YOU  ·  ").append(t.user).append("\n\n");
+            screen.append("RUMITX  ·  ");
+            screen.append(t.assistant==null||t.assistant.isEmpty()?
+                "That response was interrupted. Ask again to continue.":t.assistant).append("\n\n");
+        }
+        if(screen.length()==0)screen.append("RumiTX 2030 · New conversation\n\nAsk a question or choose a previous chat from ☰ Chats.\n\n");
+        String text=screen.toString(),label=title;
+        activeThreadId=id;
+        getSharedPreferences("rumitx_chats",0).edit().putLong("active",id).apply();
+        main.post(()->{
+            if(isFinishing())return;
+            chatLabel.setText(label);
+            transcript.setText(text);
+            send.setEnabled(ready());micButton.setEnabled(ready());scrollLatest();
+        });
+    }
+    private void newChat(){
+        if(requestInFlight){voiceStatus.setText("Finish this answer before changing chats.");return;}
+        io.execute(()->{
+            try(ChannelDatabase db=new ChannelDatabase(this)){
+                long id=RumiChatStore.createThread(db.getWritableDatabase());
+                restoreThread(db,id);
+            }catch(Exception e){info("Could not create chat: "+e.getMessage());}
+        });
+    }
+    private void openChat(long id){
+        if(requestInFlight){voiceStatus.setText("Wait for the answer before changing chats.");return;}
+        io.execute(()->{
+            try(ChannelDatabase db=new ChannelDatabase(this)){
+                if(RumiChatStore.exists(db.getReadableDatabase(),id))restoreThread(db,id);
+            }catch(Exception e){info("Could not open chat: "+e.getMessage());}
+        });
+    }
+    private void showChats(){
+        if(requestInFlight){voiceStatus.setText("Wait for the answer before changing chats.");return;}
+        io.execute(()->{
+            try(ChannelDatabase db=new ChannelDatabase(this)){
+                java.util.List<RumiChatStore.Thread> chats=RumiChatStore.threads(db.getReadableDatabase());
+                main.post(()->{
+                    if(isFinishing())return;
+                    String[] labels=new String[chats.size()];
+                    for(int i=0;i<chats.size();i++){
+                        RumiChatStore.Thread t=chats.get(i);
+                        labels[i]=(t.id==activeThreadId?"●  ":"   ")+t.title+"   ·   "+t.count+" turns";
+                    }
+                    new android.app.AlertDialog.Builder(this)
+                        .setTitle("Saved RumiTX chats")
+                        .setItems(labels,(d,index)->openChat(chats.get(index).id))
+                        .setPositiveButton("+ New chat",(d,w)->newChat())
+                        .setNegativeButton("Close",null).show();
+                });
+            }catch(Exception e){info("Could not list chats: "+e.getMessage());}
+        });
+    }
+    private void renameChat(){
+        if(activeThreadId<=0||requestInFlight)return;
+        EditText input=new EditText(this);
+        input.setSingleLine(true);input.setText(chatLabel.getText());
+        new android.app.AlertDialog.Builder(this).setTitle("Rename this chat")
+            .setView(input).setNegativeButton("Cancel",null)
+            .setPositiveButton("Save",(d,w)->io.execute(()->{
+                try(ChannelDatabase db=new ChannelDatabase(this)){
+                    RumiChatStore.rename(db.getWritableDatabase(),activeThreadId,input.getText().toString());
+                    restoreThread(db,activeThreadId);
+                }catch(Exception e){info("Rename failed: "+e.getMessage());}
+            })).show();
+    }
+    private void deleteCurrentChat(){
+        if(activeThreadId<=0||requestInFlight)return;
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("Delete this conversation?")
+            .setMessage("Only this chat will be deleted. Your other chats, saved memories, repeaters and radio channels remain.")
+            .setNegativeButton("Cancel",null)
+            .setPositiveButton("Delete",(d,w)->io.execute(()->{
+                try(ChannelDatabase db=new ChannelDatabase(this)){
+                    RumiChatStore.delete(db.getWritableDatabase(),activeThreadId);
+                    long id=RumiChatStore.resolveThread(db.getWritableDatabase(),0);
+                    restoreThread(db,id);
+                }catch(Exception e){info("Chat deletion failed: "+e.getMessage());}
+            })).show();
+    }
+    private void showOptions(){
+        PopupMenu menu=new PopupMenu(this,optionsButton);
+        menu.getMenu().add(0,1,0,"New chat");
+        menu.getMenu().add(0,2,1,"Rename this chat");
+        menu.getMenu().add(0,3,2,"Delete this chat");
+        menu.getMenu().add(0,4,3,"Spoken replies: "+(voice.isSpeakingEnabled()?"ON":"OFF"));
+        menu.getMenu().add(0,5,4,"Memory, frequencies & catalog");
+        menu.getMenu().add(0,6,5,"Import repeater JSON");
+        menu.getMenu().add(0,7,6,"Index Project Nomad SD");
+        menu.getMenu().add(0,8,7,"Start offline AI");
+        menu.getMenu().add(0,9,8,"Import S80 runtime");
+        menu.getMenu().add(0,10,9,"Import V3 model");
+        menu.setOnMenuItemClickListener(item->{
+            switch(item.getItemId()){
+                case 1:resetButton.performClick();return true;
+                case 2:renameChat();return true;
+                case 3:deleteCurrentChat();return true;
+                case 4:voiceButton.performClick();return true;
+                case 5:memoryButton.performClick();return true;
+                case 6:repeaterButton.performClick();return true;
+                case 7:nomadButton.performClick();return true;
+                case 8:run.performClick();return true;
+                case 9:packageButton.performClick();return true;
+                case 10:modelButton.performClick();return true;
+            }
+            return false;
+        });
+        menu.show();
+    }
     private void pick(int request,String type){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType(type);if(request==PICK_RUNTIME)i.setType("*/*");startActivityForResult(i,request);}
     @Override protected void onActivityResult(int req,int result,Intent data){
         super.onActivityResult(req,result,data);
