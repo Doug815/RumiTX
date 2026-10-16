@@ -79,6 +79,7 @@ public final class RadioIntentParser {
             if(!validFreq(rx))return invalid(String.format(Locale.US,"RX frequency %.4f MHz is outside 400–470 MHz. No change made.",rx));
             return new Intent(Type.FREQUENCY,rx,tx==null?rx:tx,pl,dcs,0,"",null,plPresent||dcsPresent,tx!=null);
         }
+        if(rx==null&&s.matches(".*\\b(?:frequency|freq)\\s+(?:to\\s+)?[0-9]{3}(?:\\s+mhz)?$"))return invalid("Requested frequency is outside the supported 400–470 MHz decimal format. No change made.");
         if(tx!=null)return invalid("A receive frequency is required as well as TX. No change made.");
         if(plPresent||dcsPresent)return invalid("Specify a frequency with the tone. No change made.");
         String tail=s.substring(verb.end()).trim();
