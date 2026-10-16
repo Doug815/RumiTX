@@ -37,7 +37,7 @@ public final class RadioIntentParserTest {
         deny("set frequency to 300 MHz","outside");
         deny("set frequency to 475.000","outside");
         deny("set frequency TX 460.000","receive frequency");
-        check("set squelch to 3",Type.CHANNEL_NAME,0,0,0,null,0,"squelch to 3",null);
+        deny("set squelch to 3","not supported");
         System.out.println("All RumiTX fuzzy parser tests passed");
     }
 }
