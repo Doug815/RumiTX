@@ -27,6 +27,8 @@ android {
 }
 
 dependencies {
+    // Hidden Android 8.1 HIDL signatures only; real types are supplied by device firmware.
+    compileOnly files('libs/hidl-compile-stubs.jar')
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'org.mapsforge:mapsforge-map-android:0.25.0'
     implementation 'org.mapsforge:mapsforge-themes:0.25.0'
