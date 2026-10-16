@@ -340,8 +340,7 @@ public class ChannelDatabase extends SQLiteOpenHelper {
             }
         }
         try(Cursor c=getReadableDatabase().rawQuery(
-                "SELECT user_text,assistant_text FROM chat_messages WHERE thread_id<>? ORDER BY _id DESC LIMIT 350",
-                new String[]{Long.toString(activeThread)})){
+                "SELECT user_text,assistant_text FROM chat_messages ORDER BY _id DESC LIMIT 350",null)){
             while(c.moveToNext()){
                 String user=c.getString(0),answer=c.getString(1);
                 int pts=score(user,terms)*2+score(answer,terms);
