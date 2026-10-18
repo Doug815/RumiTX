@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /lab
+Disallow: /profile
+Sitemap: https://rumitx-field-lab.realdvs1.chatgpt.site/sitemap.xml

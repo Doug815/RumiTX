@@ -1,0 +1,1 @@
+export default function NotFound(){return <main id='main' className='page'><span className='eyebrow'>404 / SIGNAL LOST</span><h1>Out of range.</h1><p>This page isn’t on our channel map.</p><a className='button primary' href='/'>Return to base →</a></main>}

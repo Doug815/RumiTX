@@ -1,35 +1,58 @@
-# Build outputs
-build/
-out/
-*.apk
-*.ap_
-*.aab
-*.dex
-*.class
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# Android / Gradle
-.gradle/
-local.properties
-.idea/
-*.iml
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/.vinext/
+/out/
+
+# misc
 .DS_Store
+*.pem
 
-# Signing keys (never commit)
-*.keystore
-*.jks
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
+# env files (can opt-in for committing if needed)
+.env*
 
-# Captures and logs
-*.cu8
-*.log
+# vercel
+.vercel
 
-# Editor
-*.swp
-*~
-.vscode/
+# typescript
+next-env.d.ts
+
+# Maintained Vite plugin and worker sources.
+!/build/
+/build/*
+!/build/connector-preview-plugin.mjs
+!/build/connector-preview-worker.mjs
+!/build/sites-vite-plugin.LICENSE
+!/build/sites-vite-plugin.ts
+!/build/sites-worker.ts
+
+/dist/
+/.wrangler/
+# Checkout-local execution profile and tool state; never publish them.
+/.sites-runtime/
+/.agents/
+/.codex/
+/outputs/
+/work/
+
+*.tsbuildinfo

@@ -1,0 +1,9 @@
+RumiTX — Intelligence off the grid
+Independent Android radio-control and local-AI project for the DOOGEE S80.
+Project areas: channel management, repeater discovery, AI command handling, ATAK integration, and offline operation.
+Website: https://rumitx-field-lab.realdvs1.chatgpt.site
+Android source: https://github.com/Doug815/RumiTX
+Website lab: a web behavior prototype, not an Android emulator. No RF is transmitted.
+Reference build: v2.3.2-llama-bundled, versionCode 20301050. Static inspection only.
+Media: SVG wordmark available; native screenshots and demo footage pending.
+Contact: project GitHub issue tracker. No manufacturer endorsement implied.

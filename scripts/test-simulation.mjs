@@ -1,0 +1,6 @@
+import assert from 'node:assert/strict';
+import {respond,initialHardware,fixtures,distance} from '../lib/simulation.ts';
+const checks=[['switch to channel 5','set_channel'],['change to channel 16','set_channel'],['switch to channel 0','clarify'],['switch to channel 17','clarify'],['hello','chat'],["how’s your day?",'chat'],['repeaters near me','query_repeaters'],['battery status','query_status'],['transmit now','clarify'],['garbled .. ?','clarify'],['do not switch to channel 5','clarify']];
+for(const [q,intent] of checks){const result=respond(q,initialHardware);assert.equal(result.intent,intent,q);assert.ok(result.text.length>0,q)}
+assert.equal(fixtures.length,50);assert.equal(new Set(fixtures.map(x=>x.id)).size,50);assert.ok(fixtures.every(x=>x.synthetic&&x.callsign.startsWith('TEST-')));assert.ok(distance(42,-89,42,-89)<.0001);
+const times=[];for(let i=0;i<1000;i++){const t=performance.now();fixtures.map(r=>({...r,d:distance(42.2711,-89.094,r.latitude,r.longitude)})).sort((a,b)=>a.d-b.d);times.push(performance.now()-t)}times.sort((a,b)=>a-b);console.log(JSON.stringify({passed:checks.length+4,iterations:1000,fixtureQueryMedianMs:times[500],fixtureQueryP95Ms:times[950],scope:'local pure computation only, not hosted API latency'},null,2));

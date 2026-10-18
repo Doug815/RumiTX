@@ -1,0 +1,11 @@
+{
+  "package": "com.rumitx.app",
+  "versionName": "2.3.2-llama-bundled",
+  "versionCode": 20301050,
+  "file": "RumiTX-v2.3.2-llama-bundled-CI-DEBUG.apk",
+  "bytes": 6305956,
+  "sha256": "32ab44cd6945dd6bef51e3317ed96213b0fcaa931ea29c53e5a874d39e83d3e3",
+  "classification": "CI-debug engineering reference; NOT promoted",
+  "warning": "Different certificate from original installed app; not a drop-in update",
+  "device_execution_tested": false
+}
