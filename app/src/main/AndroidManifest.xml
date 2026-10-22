@@ -12,6 +12,7 @@
 
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <application
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true" android:extractNativeLibs="true"
@@ -28,6 +29,9 @@
             </intent-filter>
         </activity>
 
+        <activity android:name=".AgentSettingsActivity"
+            android:exported="false"
+            android:label="Agent API" />
         <activity android:name=".ChannelEditorActivity"
             android:label="Edit Channel" />
         <activity android:name=".DiscoveryActivity"
@@ -39,6 +43,12 @@
         <activity android:name=".tak.MessagingStatusActivity" android:exported="false" />
         <service android:name=".tak.GeoChatService" android:exported="false" />
         <service android:name=".RadioService" android:exported="false" />
+        <receiver android:name=".BootReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
         <service android:name=".tak.TakService" android:exported="false" />
     </application>
 </manifest>

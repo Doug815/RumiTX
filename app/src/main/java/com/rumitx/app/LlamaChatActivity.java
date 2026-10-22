@@ -19,6 +19,10 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.PopupMenu;
+import com.rumitx.app.agent.CommandLayer;
+import com.rumitx.app.agent.LlamaRuntime;
+import com.rumitx.app.agent.RumiMemory;
+import com.rumitx.app.agent.ToolCall;
 import org.json.JSONObject;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -74,7 +78,10 @@ public final class LlamaChatActivity extends Activity {
     private static final String SYSTEM=
         "You are RumiTX, a helpful, friendly conversational assistant on an S80 radio. "+
         "Speak naturally in English. Chat casually, explain practical topics clearly, "+
-        "and admit uncertainty. Do not emit JSON, tool calls or schemas. "+
+        "and admit uncertainty. Ordinary replies are plain text. "+
+        "When the user explicitly asks you to key or unkey, answer with only one JSON object "+
+        "{\"tool\":\"key_ptt\",\"args\":{}} or {\"tool\":\"unkey_ptt\",\"args\":{}} and no other text. "+
+        "Never invent encryption keys. "+
         "You may describe radio procedures, but NEVER claim hardware changed unless "+
         "the radio command handler confirmed it. Keep answers brief. /no_think";
 
@@ -105,8 +112,7 @@ public final class LlamaChatActivity extends Activity {
     private void append(String entry){
         main.post(()->{
             if(isFinishing())return;
-            conversation+=entry+"\n\n";
-            if(conversation.length()>50000)conversation=conversation.substring(conversation.length()-50000);
+            conversation=RumiMemory.bound(conversation+entry+"\n\n");
             transcript.setText(conversation);
             getPreferences(0).edit().putString("conversation",conversation).apply();
             scrollLatest();
@@ -273,6 +279,15 @@ public final class LlamaChatActivity extends Activity {
                 LlamaBridge b=new LlamaBridge();
                 b.initModel(model.getAbsolutePath());
                 engine=b;
+                LlamaRuntime.attach(new LlamaRuntime.Generator(){
+                    @Override public boolean loaded(){synchronized(ENGINE_LOCK){return engine!=null&&engine.isLoaded();}}
+                    @Override public String complete(String prompt){
+                        LlamaBridge nativeEngine;
+                        synchronized(ENGINE_LOCK){nativeEngine=engine;}
+                        if(nativeEngine==null)return null;
+                        return nativeEngine.generate(prompt,80);
+                    }
+                });
             }
         }
         statusUi("READY · Local AI · Voice controls active");
@@ -307,6 +322,21 @@ public final class LlamaChatActivity extends Activity {
                 android.util.Log.e("RumiTX-JNI","Manual import",t);
             }finally{setBusy(false);}
         });
+    }
+    /** Tool JSON is handled before cleanAnswer, which would otherwise drop a tool object. */
+    private String applyModel(String raw){
+        ToolCall call=ToolCall.parse(stripThink(raw));
+        if(call==null)return cleanAnswer(raw);
+        CommandLayer layer=AgentRuntime.layer();
+        if(layer==null)return "The agent service is not running, so that tool was not executed.";
+        CommandLayer.Outcome outcome=layer.tool(call,CommandLayer.Actor.model(),null);
+        return outcome.plain==null||outcome.plain.isEmpty()?outcome.body:outcome.plain;
+    }
+    private static String stripThink(String raw){
+        if(raw==null)return "";
+        return raw.replaceAll("(?s)<think>.*?</think>","")
+            .replaceAll("(?s)<think>.*","")
+            .replace("<|im_end|>","").replace("<|im_start|>","").trim();
     }
     /** Never expose radio fine-tuning JSON error schemas to normal chat users. */
     static String cleanAnswer(String raw){
@@ -353,14 +383,8 @@ public final class LlamaChatActivity extends Activity {
                 }
             }
             case FREQUENCY: {
-                Channel temp=new Channel();
-                temp.id=0;
-                temp.name=String.format(Locale.US,"Temporary %.4f",intent.frequencyMHz);
-                temp.rxFreqMHz=intent.frequencyMHz;temp.txFreqMHz=intent.txFrequencyMHz;
-                temp.isDigital=false;temp.rxCtcssHz=intent.plHz;
-                temp.txCtcssHz=0;temp.rxDcsCode=intent.dcsCode;
-                temp.squelchLevel=1;
-                return programSavedChannel(temp);
+                return programSavedChannel(AiTempChannel.create(
+                    intent.frequencyMHz,intent.txFrequencyMHz,intent.plHz,intent.dcsCode));
             }
             default:return null; // Normal conversation goes to model.
         }
@@ -386,7 +410,7 @@ public final class LlamaChatActivity extends Activity {
     }
     private String prompt(String question,String prior){
         // Last user /no_think applies even if the model was trained on action JSON.
-        if(prior.length()>850)prior=prior.substring(prior.length()-850);
+        if(prior.length()>RumiMemory.PROMPT_CHARS)prior=prior.substring(prior.length()-RumiMemory.PROMPT_CHARS);
         String localFacts=repeaterPromptContext;
         if(localFacts.length()>800)localFacts=localFacts.substring(0,800);
         return "<|im_start|>system\n"+SYSTEM+"<|im_end|>\n"+
@@ -466,13 +490,19 @@ public final class LlamaChatActivity extends Activity {
                             LlamaBridge nativeEngine;
                             synchronized(ENGINE_LOCK){nativeEngine=engine;}
                             if(nativeEngine==null)throw new IllegalStateException("Model not loaded; Retry first");
-                            lastNativePreview=0;
-                            latestPreview="";
-                            previewPending=false;
-                            String raw=nativeEngine.generateStreaming(
-                                prompt(question,prior),80,bytes->
-                                    preview(requestId,new String(bytes,StandardCharsets.UTF_8)));
-                            reply=cleanAnswer(raw);
+                            if(!LlamaRuntime.tryAcquire()){
+                                reply="The on-device model is busy with another request.";
+                            }else{
+                                try{
+                                    lastNativePreview=0;
+                                    latestPreview="";
+                                    previewPending=false;
+                                    String raw=nativeEngine.generateStreaming(
+                                        prompt(question,prior),80,bytes->
+                                            preview(requestId,new String(bytes,StandardCharsets.UTF_8)));
+                                    reply=applyModel(raw);
+                                }finally{LlamaRuntime.release();}
+                            }
                         }
                     }
                 }
@@ -483,8 +513,7 @@ public final class LlamaChatActivity extends Activity {
             final String result=reply;
             main.post(()->{
                 if(activeRequestId!=requestId||isFinishing())return;
-                conversation+="RUMITX · "+result+"\n\n";
-                if(conversation.length()>50000)conversation=conversation.substring(conversation.length()-50000);
+                conversation=RumiMemory.bound(conversation+"RUMITX · "+result+"\n\n");
                 transcript.setText(conversation);
                 getPreferences(0).edit().putString("conversation",conversation).apply();
                 status.setText("READY · Local repeater search and offline AI");

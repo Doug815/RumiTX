@@ -16,6 +16,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayDeque;
 import java.util.Locale;
 import java.util.Set;
 import java.util.HashSet;
@@ -56,6 +57,9 @@ public final class VoiceTxBridge {
     private final Set<String> seenNonces = new HashSet<>();
     private volatile CountDownLatch activeCompletion;
     private volatile MediaPlayer activePlayer;
+    private volatile CountDownLatch localDone;
+    private volatile boolean localOk;
+    private volatile String localMessage;
     private long lastTxEndElapsedMs = -100000;
 
     public VoiceTxBridge(Context ctx, RadioController controller) {
@@ -70,6 +74,72 @@ public final class VoiceTxBridge {
     public boolean isBusy() { return busy.get(); }
     /** Visible to manual controls so they never compete for the radio during a bridge TX. */
     public static boolean isTransmitting() { return BUSY.get(); }
+
+    /**
+     * In-process audio after the agent transmit policy has already allowed the channel.
+     * Same speaker playback and finally-unkey as the signed TX_AUDIO path. No HMAC bypass
+     * for external broadcasts: those still go through {@link #receiver()}.
+     */
+    public String submitLocal(File wav, Channel channel) throws Exception {
+        if (wav == null || channel == null) throw new IllegalArgumentException("audio and channel are required");
+        if (closing.get()) throw new IllegalStateException("bridge closing");
+        if (!busy.compareAndSet(false, true)) throw new IllegalStateException("one radio transmission at a time");
+        final CountDownLatch done = new CountDownLatch(1);
+        localDone = done;
+        localOk = false;
+        localMessage = "audio did not finish";
+        try {
+            executor.execute(() -> {
+                try {
+                    transmit(localRequest(wav, channel));
+                } catch (Exception ex) {
+                    Log.e(TAG, "local TX rejected", ex);
+                    localOk = false;
+                    localMessage = ex.getMessage();
+                    busy.set(false);
+                    done.countDown();
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException ex) {
+            busy.set(false);
+            localDone = null;
+            throw new IllegalStateException("bridge stopped");
+        }
+        if (!done.await(125, TimeUnit.SECONDS)) {
+            CountDownLatch latch = activeCompletion;
+            if (latch != null) latch.countDown();
+            throw new IllegalStateException("local audio timed out");
+        }
+        if (!localOk) throw new IllegalStateException(localMessage == null ? "audio failed" : localMessage);
+        return localMessage;
+    }
+
+    private Request localRequest(File wav, Channel channel) throws Exception {
+        Request r = new Request();
+        r.local = true;
+        r.file = wav;
+        r.txMHz = channel.txFreqMHz;
+        r.rxMHz = channel.rxFreqMHz;
+        r.tx = String.format(Locale.US, "%.5f", channel.txFreqMHz);
+        r.rx = String.format(Locale.US, "%.5f", channel.rxFreqMHz);
+        r.digital = channel.isDigital ? "1" : "0";
+        r.colorCode = channel.colorCode;
+        r.talkgroup = channel.talkgroup;
+        r.cc = Integer.toString(channel.colorCode);
+        r.tg = Integer.toString(channel.talkgroup);
+        r.txCtcss = channel.txCtcssHz;
+        r.rxCtcss = channel.rxCtcssHz;
+        r.txDcs = channel.txDcsCode;
+        r.rxDcs = channel.rxDcsCode;
+        r.squelch = channel.squelchLevel;
+        r.bandwidth = channel.bandwidthKhz <= 0 ? 12 : channel.bandwidthKhz;
+        r.encry = channel.encry;
+        r.secretKey = channel.secretKey;
+        r.audio = wav.getAbsolutePath();
+        r.sha = sha256(wav);
+        verifyWavAndHash(wav, r.sha);
+        return r;
+    }
 
     public BroadcastReceiver receiver() {
         return new BroadcastReceiver() {
@@ -170,8 +240,39 @@ public final class VoiceTxBridge {
                 output.getFD().sync();
             }
             seenNonces.add(replayKey);
+            trimNonces(replay);
         }
         return r;
+    }
+
+    /** Issued-time skew already rejects stale requests, so the ledger only needs recent nonces. */
+    private void trimNonces(File replay) {
+        try {
+            if (!replay.isFile() || replay.length() <= 64 * 1024) return;
+            ArrayDeque<String> keep = new ArrayDeque<String>();
+            try (BufferedReader reader = new BufferedReader(new FileReader(replay))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String item = line.trim();
+                    if (item.isEmpty()) continue;
+                    keep.addLast(item);
+                    if (keep.size() > 1000) keep.removeFirst();
+                }
+            }
+            File tmp = new File(baseDir, "nonces.txt.tmp");
+            try (FileOutputStream output = new FileOutputStream(tmp)) {
+                for (String line : keep) output.write((line + "\n").getBytes(StandardCharsets.US_ASCII));
+                output.getFD().sync();
+            }
+            if (!tmp.renameTo(replay)) {
+                Log.w(TAG, "nonce trim rename failed");
+                return;
+            }
+            seenNonces.clear();
+            seenNonces.addAll(keep);
+        } catch (IOException e) {
+            Log.w(TAG, "nonce trim failed", e);
+        }
     }
 
     private boolean approvedChannel(String candidate) throws IOException {
@@ -259,12 +360,25 @@ public final class VoiceTxBridge {
             }
             int durationMs = verifyWavAndHash(r.file, r.sha);
             Channel ch = new Channel();
-            ch.name = "Voice agent temporary TX";
+            ch.name = r.local ? "Agent audio" : "Voice agent temporary TX";
             ch.txFreqMHz = r.txMHz;
             ch.rxFreqMHz = r.rxMHz;
-            ch.isDigital = true;
-            ch.colorCode = r.colorCode;
-            ch.talkgroup = r.talkgroup;
+            ch.isDigital = !"0".equals(r.digital);
+            if (ch.isDigital) {
+                ch.colorCode = r.colorCode;
+                ch.talkgroup = r.talkgroup;
+                ch.encry = r.encry == null ? "0" : r.encry;
+                ch.secretKey = r.secretKey == null ? "0" : r.secretKey;
+            } else {
+                ch.txCtcssHz = r.txCtcss;
+                ch.rxCtcssHz = r.rxCtcss;
+                ch.txDcsCode = r.txDcs;
+                ch.rxDcsCode = r.rxDcs;
+                ch.squelchLevel = r.squelch;
+                ch.bandwidthKhz = r.bandwidth;
+                ch.encry = "0";
+                ch.secretKey = "0";
+            }
             if (!radio.programChannel(ch)) throw new IOException("channel programming failed");
             if (closing.get()) throw new InterruptedException("cancelled before PTT");
             // MediaPlayer callbacks deliver on main Looper if instantiated on this worker.
@@ -392,6 +506,11 @@ public final class VoiceTxBridge {
     private void audit(Request r, long duration, boolean success, String msg) {
         try {
             File log = new File(baseDir, "tx_events.jsonl");
+            if (log.isFile() && log.length() > 64 * 1024) {
+                File older = new File(baseDir, "tx_events.jsonl.1");
+                if (older.exists()) older.delete();
+                log.renameTo(older);
+            }
             String json = "{\"timestamp_ms\":" + System.currentTimeMillis()
                     + ",\"tx_mhz\":\"" + r.tx + "\",\"rx_mhz\":\"" + r.rx
                     + "\",\"duration_ms\":" + duration
@@ -416,6 +535,10 @@ public final class VoiceTxBridge {
         result.putExtra("sha256", sha);
         result.putExtra("rf_verified", false);
         app.sendBroadcast(result);
+        localOk = success;
+        localMessage = message;
+        CountDownLatch waiter = localDone;
+        if (waiter != null) waiter.countDown();
     }
 
     /** Cancel active playback; enqueue cleanup after the TX worker's finally/unkey. */
@@ -429,10 +552,25 @@ public final class VoiceTxBridge {
         executor.shutdown();
     }
 
+    private static String sha256(File file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (FileInputStream input = new FileInputStream(file)) {
+            byte[] buf = new byte[8192];
+            int count;
+            while ((count = input.read(buf)) != -1) digest.update(buf, 0, count);
+        }
+        byte[] raw = digest.digest();
+        StringBuilder hex = new StringBuilder(raw.length * 2);
+        for (int i = 0; i < raw.length; i++) hex.append(String.format(Locale.US, "%02x", raw[i] & 255));
+        return hex.toString();
+    }
+
     private static final class Request {
         String audio, tx, rx, digital, cc, tg, issued, nonce, sha;
-        double txMHz, rxMHz;
-        int colorCode, talkgroup;
+        String txDcs, rxDcs, encry, secretKey;
+        double txMHz, rxMHz, txCtcss, rxCtcss;
+        int colorCode, talkgroup, squelch = 4, bandwidth = 12;
+        boolean local;
         File file;
     }
 }

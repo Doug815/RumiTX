@@ -87,6 +87,7 @@ public class MainActivity extends Activity {
         findViewById(R.id.boot_status).setOnLongClickListener(v -> {RxDiagnostics.share(this);return true;});
         findViewById(R.id.repeaters_btn).setOnClickListener(v -> startActivity(new Intent(this,com.rumitx.app.repeaters.RepeaterActivity.class)));
         findViewById(R.id.native_ai_btn).setOnClickListener(v -> startActivity(new Intent(this,LlamaChatActivity.class)));
+        findViewById(R.id.agent_api_btn).setOnClickListener(v -> startActivity(new Intent(this,AgentSettingsActivity.class)));
         findViewById(R.id.tak_settings_btn).setOnClickListener(v->{v.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);startActivity(new Intent(this,com.rumitx.app.tak.TakActivity.class));});
         // Wire up buttons
         Button pttBtn = findViewById(R.id.ptt_button);
@@ -169,41 +170,12 @@ public class MainActivity extends Activity {
         // Remote programming: adb shell am broadcast -a com.rumitx.app.PROGRAM_CHANNEL
         //   --es name "MyChan" --es tx "446.1000" --es rx "446.1000"
         //   --es digital "1" --es cc "1" --es tg "1" [--es activate "1"]
-        programReceiver=new BroadcastReceiver() {
-            @Override public void onReceive(Context ctx, Intent intent) {
-                if (VoiceTxBridge.isTransmitting()) {
-                    RadioLog.i("RumiTX-TX", "PROGRAM_CHANNEL blocked during voice TX");
-                    return;
-                }
-                try {
-                    Channel ch = new Channel();
-                    ch.name = intent.getStringExtra("name");
-                    if (ch.name == null) ch.name = "Remote";
-                    ch.txFreqMHz = Double.parseDouble(
-                            intent.getStringExtra("tx"));
-                    String rx = intent.getStringExtra("rx");
-                    ch.rxFreqMHz = (rx != null) ? Double.parseDouble(rx)
-                                               : ch.txFreqMHz;
-                    ch.isDigital = !"0".equals(intent.getStringExtra("digital"));
-                    String cc = intent.getStringExtra("cc");
-                    if (cc != null) ch.colorCode = Integer.parseInt(cc);
-                    String tg = intent.getStringExtra("tg");
-                    if (tg != null) ch.talkgroup = Integer.parseInt(tg);
-                    db.saveChannel(ch);
-                    refreshChannelList();
-                    if (!"0".equals(intent.getStringExtra("activate"))) {
-                        activateChannel(ch);
-
-                    }
-                    Toast.makeText(MainActivity.this,
-                            "Programmed: " + ch.name, Toast.LENGTH_SHORT).show();
-                } catch (Exception e) {
-                    Toast.makeText(MainActivity.this,
-                            "Remote program failed: " + e.getMessage(),
-                            Toast.LENGTH_LONG).show();
-                }
-            }
-        };
+        programReceiver=UiProgrammer.receiver(new UiProgrammer.Host() {
+            @Override public ChannelDatabase database() { return db; }
+            @Override public void refresh() { runOnUiThread(() -> { if (!destroyed) refreshChannelList(); }); }
+            @Override public void activate(Channel channel) { activateChannel(channel); }
+            @Override public void toast(String message) { showToast(message); }
+        });
         registerReceiver(programReceiver, new IntentFilter("com.rumitx.app.PROGRAM_CHANNEL"));
     }
 
@@ -298,7 +270,7 @@ public class MainActivity extends Activity {
 
     /** Test HIDL access to the vendor talkie service. Uses reflection to avoid compile-time dependency. */
     private final android.os.Handler statusUi=new android.os.Handler();
-    private final Runnable statusRefresh=new Runnable(){public void run(){if(destroyed)return;setBootStatus(RadioService.status());int unread=getSharedPreferences("message_state",0).getInt("unread",0);((Button)findViewById(R.id.tak_settings_btn)).setText(unread>0?"TAK ("+Math.min(unread,99)+")":"TAK");Channel ch=radio.currentChannel();if(ch!=null&&(activeChannel==null||activeChannel.id!=ch.id)){activeChannel=ch;updateActiveChannel(ch);((android.widget.SeekBar)findViewById(R.id.squelch_seek)).setProgress(ch.squelchLevel);}statusUi.postDelayed(this,1000);}};
+    private final Runnable statusRefresh=new Runnable(){public void run(){if(destroyed)return;setBootStatus(RadioService.status());int unread=getSharedPreferences("message_state",0).getInt("unread",0);((Button)findViewById(R.id.tak_settings_btn)).setText(unread>0?"TAK ("+Math.min(unread,99)+")":"TAK");boolean transmitting=radio.isKeyed()||VoiceTxBridge.isTransmitting();TextView txLight=findViewById(R.id.tx_indicator);txLight.setText(transmitting?"TRANSMITTING":"");Channel ch=radio.currentChannel();if(ch!=null&&(activeChannel==null||activeChannel.id!=ch.id)){activeChannel=ch;updateActiveChannel(ch);((android.widget.SeekBar)findViewById(R.id.squelch_seek)).setProgress(ch.squelchLevel);}statusUi.postDelayed(this,1000);}};
     private void testHidlAccess(){statusUi.post(statusRefresh);}
 
     private void setBootStatus(String message) {

@@ -1,0 +1,14 @@
+{
+  "mcp": {
+    "rumitx": {
+      "type": "local",
+      "command": ["node", "C:/rumitx/tools/rumitx-mcp/server.mjs"],
+      "enabled": true,
+      "environment": {
+        "RUMITX_API": "http://127.0.0.1:8765",
+        "RUMITX_READ_TOKEN": "paste-the-read-token-from-the-phone",
+        "RUMITX_COMMAND_TOKEN": "paste-the-command-token-from-the-phone"
+      }
+    }
+  }
+}
