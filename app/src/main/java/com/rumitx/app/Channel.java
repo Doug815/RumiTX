@@ -69,7 +69,7 @@ public class Channel {
         int gwb = (bandwidthKhz == 25) ? 1 : 0;
         return Dmr007Frame.buildSetGroupAnalog(
                 txFreqMHz, rxFreqMHz, String.valueOf(gwb), "0",
-                String.valueOf(squelchLevel), String.valueOf(tones.type), String.valueOf(tones.rx), String.valueOf(tones.type), String.valueOf(tones.tx));
+                String.valueOf(squelchLevel), String.valueOf(tones.rxType), String.valueOf(tones.rx), String.valueOf(tones.txType), String.valueOf(tones.tx));
     }
 
     public boolean isSplitFrequency() {

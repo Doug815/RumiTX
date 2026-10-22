@@ -1,0 +1,12 @@
+.gradle/
+build/
+app/build/
+local.properties
+app/libs/*.jar
+app/src/main/jniLibs/
+.ci-llama/
+.ci-tests/
+*.apk
+.idea/
+*.iml
+.DS_Store

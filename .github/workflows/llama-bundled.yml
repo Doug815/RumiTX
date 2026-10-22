@@ -1,4 +1,4 @@
-name: RumiTX v2.3.2 Bundled llama.cpp for non-rooted S80
+name: RumiTX v2.4.0 agent API with bundled llama.cpp
 on:
   push:
     branches:
@@ -33,8 +33,8 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          grep -F 'versionCode 20301050' app/build.gradle
-          grep -F 'versionName "2.3.2-llama-bundled"' app/build.gradle
+          grep -F 'versionCode 20400000' app/build.gradle
+          grep -F 'versionName "2.4.0-agent-api"' app/build.gradle
           grep -F 'applicationId "com.rumitx.app"' app/build.gradle
           grep -F 'VoiceTxBridge.isTransmitting()' app/src/main/java/com/rumitx/app/PttDispatcher.java
           grep -F 'VoiceTxBridge.isTransmitting()' app/src/main/java/com/rumitx/app/MainActivity.java
@@ -73,7 +73,7 @@ jobs:
           a=(root/"LlamaChatActivity.java").read_text()
           bridge=(root/"LlamaBridge.java").read_text()
           native=Path("app/src/main/cpp/rumitx_llama_jni.cpp").read_text()
-          assert 'versionCode 20301050' in Path("app/build.gradle").read_text()
+          assert 'versionCode 20400000' in Path("app/build.gradle").read_text()
           assert 'Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)' in a
           assert 'nativeEngine.generateStreaming(' in a
           assert 'new String(bytes,StandardCharsets.UTF_8)' in a
@@ -104,7 +104,7 @@ jobs:
           bridge=(app/"LlamaBridge.java").read_text()
           cpp=Path("app/src/main/cpp/rumitx_llama_jni.cpp").read_text()
           search=(app/"RepeaterLocalSearch.java").read_text()
-          assert 'versionCode 20301050' in Path("app/build.gradle").read_text()
+          assert 'versionCode 20400000' in Path("app/build.gradle").read_text()
           assert 'private static final long INFERENCE_TIMEOUT_MS=30000L;' in a
           assert 'current.cancelGeneration()' in a
           assert 'nativeCancelGeneration(long handle)' in bridge
@@ -124,6 +124,8 @@ jobs:
           PY
       - name: Regression test persisted V4 database and older schema migrations
         run: python3 tools/tests/test_channel_database_migration.py
+      - name: Test agent API transmit policy and independent tone modes
+        run: bash tools/test_agent_api.sh
       - name: Generate compileOnly Android 8.1 HIDL signatures
         run: bash tools/build_hidl_compile_stubs.sh
       - name: Cross-compile llama.cpp and JNI for Android arm64-v8a
@@ -135,18 +137,18 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release-unsigned.apk dist/RumiTX-v2.3.2-llama-bundled-UNSIGNED.apk
-          cp app/build/outputs/apk/debug/app-debug.apk dist/RumiTX-v2.3.2-llama-bundled-CI-DEBUG.apk
+          cp app/build/outputs/apk/release/app-release-unsigned.apk dist/RumiTX-v2.4.0-agent-api-UNSIGNED.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/RumiTX-v2.4.0-agent-api-CI-DEBUG.apk
           cp tools/sign_llama_bundled.sh dist/sign_llama_bundled.sh
-          "$ANDROID_HOME/build-tools/33.0.2/aapt" dump badging dist/RumiTX-v2.3.2-llama-bundled-UNSIGNED.apk > dist/BADGING.txt
-          grep -F "package: name='com.rumitx.app' versionCode='20301050' versionName='2.3.2-llama-bundled'" dist/BADGING.txt
+          "$ANDROID_HOME/build-tools/33.0.2/aapt" dump badging dist/RumiTX-v2.4.0-agent-api-UNSIGNED.apk > dist/BADGING.txt
+          grep -F "package: name='com.rumitx.app' versionCode='20400000' versionName='2.4.0-agent-api'" dist/BADGING.txt
           for lib in libllama.so libggml.so libggml-base.so libggml-cpu.so librumitx_llama_jni.so; do
-            unzip -l dist/RumiTX-v2.3.2-llama-bundled-UNSIGNED.apk "lib/arm64-v8a/$lib" | tee -a dist/LIBRARY_SIZES.txt
+            unzip -l dist/RumiTX-v2.4.0-agent-api-UNSIGNED.apk "lib/arm64-v8a/$lib" | tee -a dist/LIBRARY_SIZES.txt
           done
           cp app/src/main/jniLibs/arm64-v8a/*.so dist/
           (cd dist && sha256sum *.apk *.so > SHA256SUMS.txt)
           cat > dist/README.txt <<'EOF'
-          RumiTX 2030 — v2.3.2-llama-bundled / versionCode 20301050
+          RumiTX 2030 — v2.4.0-agent-api / versionCode 20400000
           Base: v2.3.1-source, including Voice TX PTT/channel programming guards.
           Pinned llama.cpp: b11206. Android ARM64 API 26 native .so libraries.
           AI runs via app-process JNI, no root, shell installer, ADB or standalone executable.
@@ -161,13 +163,13 @@ jobs:
           Do not upload the key or uninstall the working app.
           Run sign_llama_bundled.sh on the ThinkPad, compare signing certificate to
           a previously installed original-key APK, then stage the signed artifact at
-          /tmp/RumiTX-v2.3.2-llama-bundled.apk.
+          /tmp/RumiTX-v2.4.0-agent-api.apk.
           No installation or on-device tests were run as directed.
           EOF
       - name: Upload bundled llama native release candidate
         uses: actions/upload-artifact@v4
         with:
-          name: rumitx-v232-llama-bundled-unsigned
+          name: rumitx-v240-agent-api-unsigned
           path: dist/
           retention-days: 30
           if-no-files-found: error
